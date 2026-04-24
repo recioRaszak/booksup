@@ -1,0 +1,316 @@
+from PyQt5.QtWidgets import (
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
+    QTableWidget, QTableWidgetItem, QMessageBox, QHeaderView, QFormLayout
+)
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QFont
+
+
+class SiteSettingsDialog(QDialog):
+    """Diálogo para configurar sitios WooCommerce"""
+    
+    def __init__(self, parent, db):
+        super().__init__(parent)
+        self.db = db
+        self.editing_site_id = None  # Para saber si estamos editando
+        self.setWindowTitle("⚙️ Configurar Sitios WooCommerce")
+        self.setGeometry(100, 100, 900, 500)
+        self.setStyleSheet(self._get_stylesheet())
+        
+        self.init_ui()
+        self.refresh_sites_table()
+    
+    def init_ui(self):
+        """Inicializa la interfaz del diálogo"""
+        layout = QVBoxLayout(self)
+        
+        # Sección de nuevo sitio
+        new_site_label = QLabel("Agregar Nuevo Sitio")
+        new_site_label.setFont(QFont("Arial", 12, QFont.Bold))
+        layout.addWidget(new_site_label)
+        
+        form_layout = QFormLayout()
+        
+        # Nombre del sitio
+        name_label = QLabel("Nombre del Sitio:")
+        self.name_input = QLineEdit()
+        self.name_input.setPlaceholderText("Ej: Mi Tienda, Librería Online")
+        form_layout.addRow(name_label, self.name_input)
+        
+        # URL del sitio
+        url_label = QLabel("URL WooCommerce:")
+        self.url_input = QLineEdit()
+        self.url_input.setPlaceholderText("Ej: https://misitio.com")
+        form_layout.addRow(url_label, self.url_input)
+        
+        # Consumer Key
+        key_label = QLabel("Consumer Key:")
+        self.key_input = QLineEdit()
+        self.key_input.setPlaceholderText("API Key de WooCommerce")
+        self.key_input.setEchoMode(QLineEdit.Password)
+        form_layout.addRow(key_label, self.key_input)
+        
+        # Consumer Secret
+        secret_label = QLabel("Consumer Secret:")
+        self.secret_input = QLineEdit()
+        self.secret_input.setPlaceholderText("API Secret de WooCommerce")
+        self.secret_input.setEchoMode(QLineEdit.Password)
+        form_layout.addRow(secret_label, self.secret_input)
+        
+        # WP Username (opcional)
+        wp_user_label = QLabel("Usuario WordPress (NO nombre de la aplicación):")
+        self.wp_user_input = QLineEdit()
+        self.wp_user_input.setPlaceholderText("Tu usuario WP real (ej: israel)")
+        form_layout.addRow(wp_user_label, self.wp_user_input)
+
+
+        # WP Password (opcional)
+        wp_pass_label = QLabel("Contraseña de aplicación (NO contraseña de admin):")
+        self.wp_pass_input = QLineEdit()
+        self.wp_pass_input.setPlaceholderText("Application Password sin espacios")
+        self.wp_pass_input.setEchoMode(QLineEdit.Password)
+        form_layout.addRow(wp_pass_label, self.wp_pass_input)
+        
+        # Botón de prueba de conexión
+        test_conexion_btn = QPushButton("🔗 Probar Conexión")
+        test_conexion_btn.clicked.connect(self.test_connection)
+        form_layout.addRow("", test_conexion_btn)
+        
+        # Botón de agregar/actualizar
+        self.action_btn = QPushButton("✅ Agregar Sitio")
+        self.action_btn.setMinimumHeight(35)
+        self.action_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                font-weight: bold;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+        """)
+        self.action_btn.clicked.connect(self.add_or_update_site)
+        form_layout.addRow("", self.action_btn)
+        
+        layout.addLayout(form_layout)
+        
+        # Línea separadora
+        separator = QLabel("-" * 60)
+        layout.addWidget(separator)
+        
+        # Sección de sitios existentes
+        existing_label = QLabel("Sitios Configurados")
+        existing_label.setFont(QFont("Arial", 12, QFont.Bold))
+        layout.addWidget(existing_label)
+        
+        # Tabla de sitios
+        self.sites_table = QTableWidget()
+        self.sites_table.setColumnCount(5)
+        self.sites_table.setHorizontalHeaderLabels(["Nombre", "URL", "Estado", "Editar", "Eliminar"])
+        self.sites_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.sites_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.sites_table.setMinimumHeight(200)
+        
+        layout.addWidget(self.sites_table)
+        
+        # Botón de cerrar
+        close_btn = QPushButton("Cerrar")
+        close_btn.clicked.connect(self.accept)
+        layout.addWidget(close_btn)
+    
+    def refresh_sites_table(self):
+        """Refresca la tabla de sitios"""
+        sites = self.db.get_all_sites()
+        
+        self.sites_table.setRowCount(0)
+        
+        for site in sites:
+            row = self.sites_table.rowCount()
+            self.sites_table.insertRow(row)
+            
+            # Nombre
+            self.sites_table.setItem(row, 0, QTableWidgetItem(site['name']))
+            
+            # URL
+            self.sites_table.setItem(row, 1, QTableWidgetItem(site['url']))
+            
+            # Estado (placeholder)
+            self.sites_table.setItem(row, 2, QTableWidgetItem("✅ Configurado"))
+            
+            # Botón de eliminar
+            delete_btn = QPushButton("🗑️ Eliminar")
+            delete_btn.setMaximumWidth(100)
+            delete_btn.clicked.connect(lambda checked, site_id=site['id']: self.delete_site(site_id))
+            delete_btn.setStyleSheet("background-color: #f44336; color: white;")
+            self.sites_table.setCellWidget(row, 3, delete_btn)
+    
+    def add_or_update_site(self):
+        """Agrega un nuevo sitio o actualiza uno existente"""
+        name = self.name_input.text().strip()
+        url = self.url_input.text().strip()
+        key = self.key_input.text().strip()
+        secret = self.secret_input.text().strip()
+        wp_user = self.wp_user_input.text().strip()
+        wp_pass = self.wp_pass_input.text().strip()
+        
+        # Validar campos obligatorios
+        if not all([name, url, key, secret]):
+            QMessageBox.warning(self, "Error", "Nombre, URL, Consumer Key y Consumer Secret son obligatorios")
+            return
+        
+        if not url.startswith(('http://', 'https://')):
+            url = 'https://' + url
+        
+        if self.editing_site_id:
+            # Actualizar sitio existente
+            success = self.db.update_site(self.editing_site_id, name, url, key, secret, wp_user, wp_pass)
+            if success:
+                QMessageBox.information(self, "Éxito", "Sitio actualizado correctamente")
+                self.reset_form()
+                self.refresh_sites_table()
+            else:
+                QMessageBox.warning(self, "Error", "No se pudo actualizar el sitio")
+        else:
+            # Agregar nuevo sitio
+            success, message = self.db.add_site(name, url, key, secret, wp_user, wp_pass)
+            if success:
+                QMessageBox.information(self, "Éxito", message)
+                self.reset_form()
+                self.refresh_sites_table()
+            else:
+                QMessageBox.warning(self, "Error", message)
+    
+    def edit_site(self, site_id):
+        """Carga un sitio para editar"""
+        site = self.db.get_site(site_id)
+        if site:
+            self.name_input.setText(site['name'])
+            self.url_input.setText(site['url'])
+            self.key_input.setText(site['consumer_key'])
+            self.secret_input.setText(site['consumer_secret'])
+            self.wp_user_input.setText(site.get('wp_username', ''))
+            self.wp_pass_input.setText(site.get('wp_password', ''))
+            self.editing_site_id = site_id
+            self.action_btn.setText("🔄 Actualizar Sitio")
+    
+    def delete_site(self, site_id):
+        """Elimina un sitio"""
+        reply = QMessageBox.question(
+            self, "Confirmar", 
+            "¿Estás seguro de que deseas eliminar este sitio?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            self.db.delete_site(site_id)
+            self.refresh_sites_table()
+            QMessageBox.information(self, "Éxito", "Sitio eliminado correctamente")
+    
+    def reset_form(self):
+        """Limpia el formulario y resetea el modo de edición"""
+        self.name_input.clear()
+        self.url_input.clear()
+        self.key_input.clear()
+        self.secret_input.clear()
+        self.wp_user_input.clear()
+        self.wp_pass_input.clear()
+        self.editing_site_id = None
+        self.action_btn.setText("✅ Agregar Sitio")
+    
+    def test_connection(self):
+        """Prueba la conexión con WooCommerce"""
+        url = self.url_input.text().strip()
+        key = self.key_input.text().strip()
+        secret = self.secret_input.text().strip()
+        wp_user = self.wp_user_input.text().strip()
+        wp_pass = self.wp_pass_input.text().strip()
+        
+        if not all([url, key, secret]):
+            QMessageBox.warning(self, "Error", "Completa URL, Key y Secret")
+            return
+        
+        if not url.startswith(('http://', 'https://')):
+            url = 'https://' + url
+        
+        from book_uploader.api.woocommerce import WooCommerceAPI
+        
+        api = WooCommerceAPI(url, key, secret, wp_user if wp_user else None, wp_pass if wp_pass else None)
+        
+        if api.test_connection():
+            QMessageBox.information(self, "Éxito", "¡Conexión exitosa con WooCommerce!")
+        else:
+            QMessageBox.warning(self, "Error", "No se pudo conectar. Verifica los datos.")
+    
+    def refresh_sites_table(self):
+        """Actualiza la tabla de sitios existentes"""
+        self.sites_table.setRowCount(0)
+        sites = self.db.get_all_sites()
+        
+        for row, site in enumerate(sites):
+            self.sites_table.insertRow(row)
+            
+            # Nombre
+            name_item = QTableWidgetItem(site['name'])
+            self.sites_table.setItem(row, 0, name_item)
+            
+            # URL
+            url_item = QTableWidgetItem(site['url'])
+            self.sites_table.setItem(row, 1, url_item)
+            
+            # Estado (simulado)
+            status_item = QTableWidgetItem("✅ Configurado")
+            self.sites_table.setItem(row, 2, status_item)
+            
+            # Botón Editar
+            edit_btn = QPushButton("✏️ Editar")
+            edit_btn.clicked.connect(lambda checked, sid=site['id']: self.edit_site(sid))
+            self.sites_table.setCellWidget(row, 3, edit_btn)
+            
+            # Botón Eliminar
+            delete_btn = QPushButton("🗑️ Eliminar")
+            delete_btn.clicked.connect(lambda checked, sid=site['id']: self.delete_site(sid))
+            self.sites_table.setCellWidget(row, 4, delete_btn)
+    
+    def _get_stylesheet(self):
+        """Retorna el stylesheet"""
+        return """
+            QDialog {
+                background-color: #f5f5f5;
+            }
+            QLabel {
+                color: #333;
+            }
+            QLineEdit {
+                border: 1px solid #ccc;
+                border-radius: 4px;
+                padding: 6px;
+                background-color: white;
+                color: #333;
+            }
+            QPushButton {
+                background-color: #1976D2;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 6px 12px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #1565C0;
+            }
+            QTableWidget {
+                border: 1px solid #ccc;
+                background-color: white;
+            }
+            QTableWidget::item {
+                padding: 5px;
+                border-bottom: 1px solid #ddd;
+            }
+            QHeaderView::section {
+                background-color: #e0e0e0;
+                padding: 5px;
+                border: 1px solid #ccc;
+                font-weight: bold;
+            }
+        """
