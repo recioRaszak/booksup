@@ -110,6 +110,13 @@ class SiteSettingsDialog(QDialog):
         self.sites_table.setHorizontalHeaderLabels(["Nombre", "URL", "Estado", "Editar", "Eliminar"])
         self.sites_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.sites_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.sites_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.sites_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.sites_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        self.sites_table.verticalHeader().setDefaultSectionSize(46)
+        self.sites_table.setAlternatingRowColors(True)
+        self.sites_table.setShowGrid(False)
+        self.sites_table.setWordWrap(True)
         self.sites_table.setMinimumHeight(200)
         
         layout.addWidget(self.sites_table)
@@ -249,26 +256,35 @@ class SiteSettingsDialog(QDialog):
         
         for row, site in enumerate(sites):
             self.sites_table.insertRow(row)
+            self.sites_table.setRowHeight(row, 46)
             
             # Nombre
             name_item = QTableWidgetItem(site['name'])
+            name_item.setForeground(Qt.white)
             self.sites_table.setItem(row, 0, name_item)
             
             # URL
             url_item = QTableWidgetItem(site['url'])
+            url_item.setForeground(Qt.white)
             self.sites_table.setItem(row, 1, url_item)
             
             # Estado (simulado)
             status_item = QTableWidgetItem("✅ Configurado")
+            status_item.setForeground(Qt.white)
             self.sites_table.setItem(row, 2, status_item)
             
             # Botón Editar
             edit_btn = QPushButton("✏️ Editar")
+            edit_btn.setMinimumHeight(34)
+            edit_btn.setMinimumWidth(110)
             edit_btn.clicked.connect(lambda checked, sid=site['id']: self.edit_site(sid))
             self.sites_table.setCellWidget(row, 3, edit_btn)
             
             # Botón Eliminar
             delete_btn = QPushButton("🗑️ Eliminar")
+            delete_btn.setMinimumHeight(34)
+            delete_btn.setMinimumWidth(110)
+            delete_btn.setStyleSheet("background-color: #c62828; color: #ffffff;")
             delete_btn.clicked.connect(lambda checked, sid=site['id']: self.delete_site(sid))
             self.sites_table.setCellWidget(row, 4, delete_btn)
     
@@ -276,7 +292,7 @@ class SiteSettingsDialog(QDialog):
         """Retorna el stylesheet"""
         return """
             QDialog {
-                background-color: #f5f5f5;
+                background-color: #efefef;
             }
             QLabel {
                 color: #333;
@@ -300,17 +316,25 @@ class SiteSettingsDialog(QDialog):
                 background-color: #1565C0;
             }
             QTableWidget {
-                border: 1px solid #ccc;
-                background-color: white;
+                border: 1px solid #2f3640;
+                background-color: #1f2329;
+                alternate-background-color: #262b33;
+                color: #f2f2f2;
+                selection-background-color: #2d5ea8;
+                selection-color: #ffffff;
+                gridline-color: transparent;
+                font-size: 13px;
             }
             QTableWidget::item {
-                padding: 5px;
-                border-bottom: 1px solid #ddd;
+                padding: 10px 8px;
+                border-bottom: 1px solid #353b45;
+                color: #f2f2f2;
             }
             QHeaderView::section {
-                background-color: #e0e0e0;
-                padding: 5px;
-                border: 1px solid #ccc;
+                background-color: #171a1f;
+                color: #f7f7f7;
+                padding: 8px;
+                border: 1px solid #2f3640;
                 font-weight: bold;
             }
         """

@@ -966,15 +966,9 @@ class ProductUploadThread(QThread):
             elif image_url:
                 product_payload['images'] = [{'src': image_url, 'position': 0}]
             
-            response = requests.post(
-                f"{api.api_url}/products",
-                json=product_payload,
-                auth=api.auth,
-                timeout=10
-            )
-            
-            if response.status_code in [200, 201]:
-                product_data = response.json()
+            product_data = api.create_product_with_sku_retry(product_payload)
+
+            if product_data:
                 product_id = product_data.get('id')
                 
                 # Si el plugin de marcas está disponible, asignar marca
@@ -1002,9 +996,9 @@ class ProductUploadThread(QThread):
                     'image_uploaded': bool(media_id or image_url)
                 })
             else:
-                print(f"Error al crear producto: {response.status_code}")
-                print(response.text)
-                self.upload_error.emit("No se pudo crear el producto")
+                error_message = api.last_error or "No se pudo crear el producto"
+                print(f"Error al crear producto: {error_message}")
+                self.upload_error.emit(error_message)
         
         except Exception as e:
             print(f"Excepción: {e}")

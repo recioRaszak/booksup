@@ -26,6 +26,8 @@ class WooCommerceAPI:
         else:
             self.wp_auth = None
 
+        self.last_error = None
+
         print("\n[DEBUG] WooCommerceAPI inicializado:")
         print("  URL:", self.site_url)
         print("  WP USER:", repr(self.wp_username))
@@ -95,6 +97,98 @@ class WooCommerceAPI:
     # ---------------------------------------------------------
     # CREATE PRODUCT
     # ---------------------------------------------------------
+    def _extract_error_message(self, response):
+        """Extrae un mensaje de error útil desde la respuesta de WooCommerce."""
+        try:
+            body = response.json()
+            if isinstance(body, dict):
+                return body.get('message') or body.get('code') or response.text
+        except Exception:
+            pass
+        return response.text
+
+    def _is_retryable_sku_error(self, response):
+        """Detecta si el error corresponde a SKU inválido o duplicado."""
+        if response.status_code not in (400, 409, 422):
+            return False
+
+        text = ""
+        code = ""
+        message = ""
+        try:
+            body = response.json()
+            if isinstance(body, dict):
+                code = str(body.get('code', '')).lower()
+                message = str(body.get('message', '')).lower()
+            text = response.text.lower()
+        except Exception:
+            text = response.text.lower()
+
+        combined = f"{code} {message} {text}"
+        has_sku = 'sku' in combined
+        has_invalid_or_duplicate = any(
+            token in combined
+            for token in ('invalid', 'duplicate', 'duplicado', 'already exists', 'ya existe', 'used')
+        )
+        return has_sku and has_invalid_or_duplicate
+
+    def _build_sku_candidates(self, base_sku, max_sku_retries=9):
+        """Genera SKUs candidatos: base, base1, base2, ..."""
+        base = (base_sku or '').strip()
+        if not base:
+            return [None]
+
+        candidates = [base]
+        for i in range(1, max_sku_retries + 1):
+            candidates.append(f"{base}{i}")
+        return candidates
+
+    def create_product_with_sku_retry(self, payload, max_sku_retries=9):
+        """
+        Crea un producto y reintenta con SKU incremental si WooCommerce
+        responde que el SKU es inválido o duplicado.
+        """
+        self.last_error = None
+        sku_candidates = self._build_sku_candidates(payload.get('sku'), max_sku_retries=max_sku_retries)
+
+        for attempt, candidate_sku in enumerate(sku_candidates, start=1):
+            payload_to_send = dict(payload)
+            if candidate_sku:
+                payload_to_send['sku'] = candidate_sku
+            else:
+                payload_to_send.pop('sku', None)
+
+            response = requests.post(
+                f"{self.api_url}/products",
+                json=payload_to_send,
+                auth=self.auth,
+                timeout=10
+            )
+
+            print("[DEBUG] Código creación producto:", response.status_code)
+            print("[DEBUG] Respuesta:", response.text[:500])
+
+            if response.status_code in [200, 201]:
+                return response.json()
+
+            retryable = self._is_retryable_sku_error(response)
+            has_more_candidates = attempt < len(sku_candidates)
+
+            if retryable and has_more_candidates:
+                next_candidate = sku_candidates[attempt]
+                print(
+                    f"[DEBUG] SKU inválido/duplicado ({candidate_sku}). "
+                    f"Reintentando con SKU {next_candidate}"
+                )
+                continue
+
+            self.last_error = self._extract_error_message(response)
+            print("[DEBUG] Error al crear producto:", self.last_error)
+            return None
+
+        self.last_error = "No se pudo crear el producto con los reintentos de SKU configurados"
+        return None
+
     def create_product(self, product_data):
         print(f"\n[DEBUG] Creando producto: {product_data.get('title')}")
 
@@ -133,21 +227,7 @@ class WooCommerceAPI:
                     'height': str(product_data.get('height', '') or '')
                 }
 
-            response = requests.post(
-                f"{self.api_url}/products",
-                json=payload,
-                auth=self.auth,
-                timeout=10
-            )
-
-            print("[DEBUG] Código creación producto:", response.status_code)
-            print("[DEBUG] Respuesta:", response.text[:500])
-
-            if response.status_code in [200, 201]:
-                return response.json()
-
-            print("[DEBUG] Error al crear producto:", response.text)
-            return None
+            return self.create_product_with_sku_retry(payload)
 
         except Exception as e:
             print("[DEBUG] Excepción al crear producto:", e)
@@ -261,3 +341,96 @@ class WooCommerceAPI:
             desc += f"<p><strong>ISBN:</strong> {product_data['isbn']}</p>"
 
         return desc
+
+    def get_categories(self):
+        """Obtiene las categorías disponibles en WooCommerce."""
+        try:
+            response = requests.get(
+                f"{self.api_url}/products/categories",
+                auth=self.auth,
+                timeout=10,
+                params={'per_page': 100}
+            )
+
+            if response.status_code == 200:
+                return response.json()
+
+            self.last_error = self._extract_error_message(response)
+            print("[DEBUG] Error al obtener categorías:", self.last_error)
+            return []
+
+        except Exception as e:
+            self.last_error = str(e)
+            print("Error al obtener categorías:", e)
+            return []
+
+    def get_brands(self):
+        """Obtiene marcas desde el endpoint personalizado del plugin."""
+        try:
+            response = requests.get(
+                f"{self.site_url}/wp-json/book-uploader/v1/brands",
+                auth=self.auth,
+                timeout=10
+            )
+            if response.status_code == 200:
+                return response.json()
+
+            self.last_error = self._extract_error_message(response)
+            print("[DEBUG] Error al obtener marcas:", self.last_error)
+            return []
+        except Exception as e:
+            self.last_error = str(e)
+            print("Error al obtener marcas:", e)
+            return []
+
+    def create_brand(self, brand_name):
+        """Crea una marca/product_brand en WordPress a través del plugin."""
+        try:
+            response = requests.post(
+                f"{self.site_url}/wp-json/book-uploader/v1/brands",
+                auth=self.auth,
+                json={'name': brand_name},
+                timeout=10
+            )
+            if response.status_code in [200, 201]:
+                return response.json()
+
+            self.last_error = self._extract_error_message(response)
+            print("[DEBUG] Error al crear marca:", self.last_error)
+            return None
+        except Exception as e:
+            self.last_error = str(e)
+            print("Error al crear marca:", e)
+            return None
+
+    def assign_brand_to_product(self, product_id, brand_id):
+        """Asocia una marca product_brand a un producto."""
+        try:
+            response = requests.post(
+                f"{self.site_url}/wp-json/book-uploader/v1/products/{product_id}/brand",
+                auth=self.auth,
+                json={'brand_id': int(brand_id)},
+                timeout=10
+            )
+            if response.status_code in [200, 201]:
+                return True
+
+            self.last_error = self._extract_error_message(response)
+            print("[DEBUG] Error al asignar marca:", self.last_error)
+            return False
+        except Exception as e:
+            self.last_error = str(e)
+            print("Error al asignar marca:", e)
+            return False
+
+    def get_or_create_brand(self, brand_name):
+        """Busca una marca por nombre o la crea si no existe."""
+        brands = self.get_brands()
+        for brand in brands:
+            if brand.get('name', '').lower() == brand_name.lower():
+                return brand.get('id')
+
+        created = self.create_brand(brand_name)
+        if created:
+            return created.get('id')
+        return None
