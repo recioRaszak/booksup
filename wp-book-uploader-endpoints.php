@@ -293,6 +293,9 @@ function bu_get_product_meta_fields( $request ) {
                     continue;
                 }
 
+                $group_name = ! empty( $group['title'] ) ? sanitize_text_field( (string) $group['title'] ) : 'ACF';
+                $group_key = ! empty( $group['key'] ) ? sanitize_text_field( (string) $group['key'] ) : '';
+
                 foreach ( $acf_fields as $acf_field ) {
                     if ( empty( $acf_field['name'] ) ) {
                         continue;
@@ -324,6 +327,8 @@ function bu_get_product_meta_fields( $request ) {
                         'type' => $acf_type,
                         'choices' => $choices,
                         'acf_field_key' => $acf_field_key,
+                        'group_name' => $group_name,
+                        'group_key' => $group_key,
                     );
                 }
             }
@@ -364,12 +369,18 @@ function bu_get_product_meta_fields( $request ) {
                     'type' => 'text',
                     'choices' => array(),
                     'acf_field_key' => '',
+                    'group_name' => 'Metacampos detectados',
+                    'group_key' => 'meta-detected',
                 );
             }
         }
     }
 
     usort( $fields, function( $a, $b ) {
+        $group_cmp = strcasecmp( isset( $a['group_name'] ) ? $a['group_name'] : '', isset( $b['group_name'] ) ? $b['group_name'] : '' );
+        if ( 0 !== $group_cmp ) {
+            return $group_cmp;
+        }
         return strcasecmp( $a['label'], $b['label'] );
     } );
 

@@ -71,7 +71,8 @@ class OpenBooksAPI:
                 'publisher': data.get('publishers', [{}])[0].get('name', '') if data.get('publishers') else '',
                 'edition_year': None,
                 'format': 'Tapa blanda',  # Default
-                'cover_url': None
+                'cover_url': None,
+                'description': OpenBooksAPI._extract_openlibrary_description(data)
             }
             
             # Obtener año de publicación
@@ -90,6 +91,23 @@ class OpenBooksAPI:
         except Exception as e:
             print(f"Error al parsear datos: {e}")
             return None
+
+    @staticmethod
+    def _extract_openlibrary_description(data):
+        """Obtiene descripción de OpenLibrary en formatos string/dict."""
+        description = data.get('description')
+        if isinstance(description, dict):
+            return str(description.get('value', '')).strip()
+        if isinstance(description, str):
+            return description.strip()
+
+        notes = data.get('notes')
+        if isinstance(notes, dict):
+            return str(notes.get('value', '')).strip()
+        if isinstance(notes, str):
+            return notes.strip()
+
+        return ''
     
     @staticmethod
     def download_cover(cover_url, output_path):
@@ -270,7 +288,8 @@ class ExternalBookSourcesAPI:
                 'publisher': json_ld.get('publisher', {}).get('name', '') if isinstance(json_ld.get('publisher'), dict) else json_ld.get('publisher', ''),
                 'edition_year': ExternalBookSourcesAPI._parse_year(json_ld.get('datePublished')),
                 'format': 'Tapa blanda',
-                'cover_url': None
+                'cover_url': None,
+                'description': str(json_ld.get('description', '')).strip()
             }
         return None
 

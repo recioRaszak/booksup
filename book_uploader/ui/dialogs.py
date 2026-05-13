@@ -3,7 +3,28 @@ from PyQt5.QtWidgets import (
     QTableWidget, QTableWidgetItem, QMessageBox, QHeaderView, QFormLayout
 )
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QFont, QPixmap, QPainter, QColor
+from PyQt5.QtGui import QFont, QPixmap, QPainter, QColor, QFontDatabase
+import re
+import subprocess
+from pathlib import Path
+
+import requests
+
+
+def _pick_serif_font_family():
+    serif_stack = [
+        "Libre Serif",
+        "Times New Roman",
+        "Times",
+        "Liberation Serif",
+        "DejaVu Serif",
+        "Noto Serif",
+    ]
+    available = set(QFontDatabase().families())
+    for family in serif_stack:
+        if family in available:
+            return family
+    return "Times New Roman"
 
 
 class AppSplashDialog(QDialog):
@@ -11,6 +32,7 @@ class AppSplashDialog(QDialog):
 
     def __init__(self, app_name, website_url, version, splash_image_path=None, parent=None):
         super().__init__(parent)
+        self.serif_font_family = _pick_serif_font_family()
         self.app_name = app_name
         self.website_url = website_url
         self.version = version
@@ -18,25 +40,27 @@ class AppSplashDialog(QDialog):
 
         self.setWindowTitle("Acerca de la aplicacion")
         self.setModal(True)
-        self.setFixedSize(700, 620)
+        # 640x480 de imagen + espacio cómodo para textos y botones sin superposiciones.
+        self.setFixedSize(700, 760)
         self.setStyleSheet(self._get_stylesheet())
 
         self.init_ui()
 
     def init_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(10)
+        layout.setContentsMargins(20, 20, 20, 22)
+        layout.setSpacing(12)
 
         splash_label = QLabel()
         splash_label.setAlignment(Qt.AlignCenter)
         splash_label.setFixedSize(640, 480)
         splash_label.setPixmap(self._load_splash_pixmap())
         layout.addWidget(splash_label, alignment=Qt.AlignCenter)
+        layout.addSpacing(8)
 
         title_label = QLabel(self.app_name)
         title_label.setAlignment(Qt.AlignCenter)
-        title_label.setFont(QFont("Arial", 13, QFont.Bold))
+        title_label.setFont(QFont(self.serif_font_family, 13, QFont.Bold))
         layout.addWidget(title_label)
 
         website_label = QLabel(f"Web: {self.website_url}")
@@ -47,10 +71,21 @@ class AppSplashDialog(QDialog):
         version_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(version_label)
 
+        actions_layout = QHBoxLayout()
+        actions_layout.addStretch()
+
+        check_updates_btn = QPushButton("Check for updates")
+        check_updates_btn.setMinimumWidth(190)
+        check_updates_btn.clicked.connect(self.check_for_updates)
+        actions_layout.addWidget(check_updates_btn)
+
         close_btn = QPushButton("Cerrar")
         close_btn.setMinimumWidth(160)
         close_btn.clicked.connect(self.accept)
-        layout.addWidget(close_btn, alignment=Qt.AlignCenter)
+        actions_layout.addWidget(close_btn)
+        actions_layout.addStretch()
+
+        layout.addLayout(actions_layout)
 
     def show_for(self, duration_ms):
         """Muestra el modal por N milisegundos y se cierra solo."""
@@ -64,7 +99,8 @@ class AppSplashDialog(QDialog):
         if self.splash_image_path:
             pixmap = QPixmap(self.splash_image_path)
             if not pixmap.isNull():
-                return pixmap.scaled(640, 480, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+                # No recortar: mantener imagen completa dentro del área 640x480.
+                return pixmap.scaled(640, 480, Qt.KeepAspectRatio, Qt.SmoothTransformation)
 
         return self._build_placeholder_pixmap()
 
@@ -76,22 +112,111 @@ class AppSplashDialog(QDialog):
         painter = QPainter(pixmap)
         painter.fillRect(0, 0, 640, 240, QColor("#243447"))
         painter.setPen(QColor("#ffffff"))
-        painter.setFont(QFont("Arial", 24, QFont.Bold))
+        painter.setFont(QFont(self.serif_font_family, 24, QFont.Bold))
         painter.drawText(pixmap.rect(), Qt.AlignCenter, "SPLASH PLACEHOLDER\n640 x 480")
         painter.end()
 
         return pixmap
 
+    def _repo_root(self):
+        """Devuelve la ruta raíz del proyecto (2 niveles encima de ui/)."""
+        return Path(__file__).resolve().parents[2]
+
+    def _has_internet_connection(self):
+        """Comprueba conectividad saliente mínima."""
+        try:
+            requests.get("https://github.com", timeout=5)
+            return True
+        except requests.RequestException:
+            return False
+
+    def _parse_version_tuple(self, value):
+        """Convierte v1.2.3 o 1.2.3 en tupla comparable."""
+        if not isinstance(value, str):
+            return ()
+        raw = value.strip().lower().lstrip('v')
+        numbers = re.findall(r'\d+', raw)
+        if not numbers:
+            return ()
+        return tuple(int(x) for x in numbers)
+
+    def _latest_remote_tag(self):
+        """Consulta tags remotos de origin vía git y devuelve la versión más alta."""
+        repo_root = self._repo_root()
+        cmd = ["git", "-C", str(repo_root), "ls-remote", "--tags", "--refs", "origin"]
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=20)
+        if proc.returncode != 0:
+            return None
+
+        tags = []
+        for line in proc.stdout.splitlines():
+            if "refs/tags/" not in line:
+                continue
+            tag_name = line.split("refs/tags/", 1)[1].strip()
+            version_tuple = self._parse_version_tuple(tag_name)
+            if version_tuple:
+                tags.append((version_tuple, tag_name))
+
+        if not tags:
+            return None
+
+        tags.sort(key=lambda item: item[0])
+        return tags[-1][1]
+
+    def check_for_updates(self):
+        """Comprueba si existe una versión superior en origin/tags."""
+        if not self._has_internet_connection():
+            QMessageBox.warning(
+                self,
+                "Sin conexión",
+                "No hay conexión a internet.\nConéctate para comprobar actualizaciones."
+            )
+            return
+
+        try:
+            remote_tag = self._latest_remote_tag()
+            if not remote_tag:
+                QMessageBox.information(
+                    self,
+                    "Actualizaciones",
+                    "No se pudieron leer tags remotos de git en origin."
+                )
+                return
+
+            local_tuple = self._parse_version_tuple(self.version)
+            remote_tuple = self._parse_version_tuple(remote_tag)
+            if remote_tuple > local_tuple:
+                QMessageBox.information(
+                    self,
+                    "Actualización disponible",
+                    f"Hay una versión superior disponible en git: {remote_tag}\n"
+                    f"Versión actual: {self.version}"
+                )
+            else:
+                QMessageBox.information(
+                    self,
+                    "App actualizada",
+                    f"No hay actualizaciones disponibles.\n"
+                    f"Versión actual: {self.version}"
+                )
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                "Error",
+                f"No se pudo comprobar actualizaciones: {exc}"
+            )
+
     def _get_stylesheet(self):
         return """
             QDialog {
                 background-color: #10151f;
+                font-family: "Libre Serif", "Times New Roman", "Times", "Liberation Serif", "DejaVu Serif", "Noto Serif";
             }
             QLabel {
                 color: #e3edf7;
             }
             QPushButton {
-                background-color: #1976D2;
+                background-color: #B0642C;
                 color: white;
                 border: none;
                 border-radius: 4px;
@@ -99,7 +224,7 @@ class AppSplashDialog(QDialog):
                 font-weight: bold;
             }
             QPushButton:hover {
-                background-color: #1565C0;
+                background-color: #9D5726;
             }
         """
 
@@ -109,6 +234,7 @@ class SiteSettingsDialog(QDialog):
     
     def __init__(self, parent, db):
         super().__init__(parent)
+        self.serif_font_family = _pick_serif_font_family()
         self.db = db
         self.editing_site_id = None  # Para saber si estamos editando
         self.setWindowTitle("⚙️ Configurar Sitios WooCommerce")
@@ -124,7 +250,7 @@ class SiteSettingsDialog(QDialog):
         
         # Sección de nuevo sitio
         new_site_label = QLabel("Agregar Nuevo Sitio")
-        new_site_label.setFont(QFont("Arial", 12, QFont.Bold))
+        new_site_label.setFont(QFont(self.serif_font_family, 12, QFont.Bold))
         layout.addWidget(new_site_label)
         
         form_layout = QFormLayout()
@@ -199,7 +325,7 @@ class SiteSettingsDialog(QDialog):
         
         # Sección de sitios existentes
         existing_label = QLabel("Sitios Configurados")
-        existing_label.setFont(QFont("Arial", 12, QFont.Bold))
+        existing_label.setFont(QFont(self.serif_font_family, 12, QFont.Bold))
         layout.addWidget(existing_label)
         
         # Tabla de sitios
@@ -391,6 +517,7 @@ class SiteSettingsDialog(QDialog):
         return """
             QDialog {
                 background-color: #efefef;
+                font-family: "Libre Serif", "Times New Roman", "Times", "Liberation Serif", "DejaVu Serif", "Noto Serif";
             }
             QLabel {
                 color: #333;
@@ -403,7 +530,7 @@ class SiteSettingsDialog(QDialog):
                 color: #333;
             }
             QPushButton {
-                background-color: #1976D2;
+                background-color: #B0642C;
                 color: white;
                 border: none;
                 border-radius: 4px;
@@ -411,7 +538,7 @@ class SiteSettingsDialog(QDialog):
                 font-weight: bold;
             }
             QPushButton:hover {
-                background-color: #1565C0;
+                background-color: #9D5726;
             }
             QTableWidget {
                 border: 1px solid #2f3640;

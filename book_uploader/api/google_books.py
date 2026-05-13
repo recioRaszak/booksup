@@ -43,7 +43,8 @@ class GoogleBooksAPI:
                 'publisher': data.get('publisher', ''),
                 'edition_year': None,
                 'format': 'Tapa blanda',  # Default
-                'cover_url': None
+                'cover_url': None,
+                'description': data.get('description', '')
             }
             
             # Obtener año

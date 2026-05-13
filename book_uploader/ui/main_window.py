@@ -2,14 +2,16 @@ from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QComboBox, QSpinBox, QDoubleSpinBox, QTextEdit, QTabWidget,
     QScrollArea, QMessageBox, QProgressDialog, QTableWidget, QTableWidgetItem,
-    QFileDialog, QHeaderView, QListWidget, QListWidgetItem, QGroupBox, QAction
+    QFileDialog, QHeaderView, QListWidget, QListWidgetItem, QGroupBox, QAction,
+    QToolBox, QCheckBox, QApplication
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QTimer
-from PyQt5.QtGui import QPixmap, QFont, QIcon
+from PyQt5.QtGui import QPixmap, QFont, QIcon, QFontDatabase
 from PyQt5.QtWidgets import QFormLayout
 
 import sys
 import os
+import html
 from pathlib import Path
 import requests
 
@@ -22,6 +24,22 @@ from book_uploader.utils.helpers import (
     get_cover_path, validate_isbn, format_price, truncate_text, get_covers_dir
 )
 from book_uploader.ui.dialogs import SiteSettingsDialog, AppSplashDialog
+
+
+def _pick_serif_font_family():
+    serif_stack = [
+        "Libre Serif",
+        "Times New Roman",
+        "Times",
+        "Liberation Serif",
+        "DejaVu Serif",
+        "Noto Serif",
+    ]
+    available = set(QFontDatabase().families())
+    for family in serif_stack:
+        if family in available:
+            return family
+    return QApplication.font().family()
 
 
 class CategoriesLoadThread(QThread):
@@ -207,6 +225,87 @@ class MainWindow(QMainWindow):
         self.cover_download_thread = None
         self.book_search_progress = None
         self.advanced_meta_rows = []
+        self.wpsso_rows = []
+        self.serif_font_family = _pick_serif_font_family()
+        self.wpsso_defaults = [
+            {
+                'slug': 'gtin13',
+                'meta_key': '_wpsso_product_gtin13',
+                'label': 'GTIN13',
+                'type': 'text',
+                'placeholder': 'Se completa desde ISBN de 13 digitos'
+            },
+            {
+                'slug': 'mpn',
+                'meta_key': '_wpsso_product_mpn',
+                'label': 'MPN',
+                'type': 'text',
+                'placeholder': 'Se recomienda usar ISBN si no hay otro codigo'
+            },
+            {
+                'slug': 'brand',
+                'meta_key': '_wpsso_product_brand',
+                'label': 'Marca',
+                'type': 'text',
+                'placeholder': 'Se completa con Marca/Editorial del producto'
+            },
+            {
+                'slug': 'condition',
+                'meta_key': '_wpsso_product_condition',
+                'label': 'Condicion',
+                'type': 'choice',
+                'choices': [('new', 'new'), ('used', 'used'), ('refurbished', 'refurbished')]
+            },
+            {
+                'slug': 'availability',
+                'meta_key': '_wpsso_product_availability',
+                'label': 'Availability',
+                'type': 'choice',
+                'choices': [('in stock', 'in stock'), ('out of stock', 'out of stock'), ('preorder', 'preorder')]
+            },
+            {
+                'slug': 'google_category',
+                'meta_key': '_wpsso_product_google_product_category',
+                'label': 'Google Product Category',
+                'type': 'text',
+                'placeholder': 'Ejemplo: Media > Books'
+            },
+            {
+                'slug': 'gender',
+                'meta_key': '_wpsso_product_gender',
+                'label': 'Genero (Google)',
+                'type': 'choice',
+                'choices': [('', 'Sin valor'), ('male', 'male'), ('female', 'female'), ('unisex', 'unisex')]
+            },
+            {
+                'slug': 'age_group',
+                'meta_key': '_wpsso_product_age_group',
+                'label': 'Age Group (Google)',
+                'type': 'choice',
+                'choices': [('', 'Sin valor'), ('newborn', 'newborn'), ('infant', 'infant'), ('toddler', 'toddler'), ('kids', 'kids'), ('adult', 'adult')]
+            },
+            {
+                'slug': 'color',
+                'meta_key': '_wpsso_product_color',
+                'label': 'Color',
+                'type': 'text',
+                'placeholder': 'Opcional'
+            },
+            {
+                'slug': 'size',
+                'meta_key': '_wpsso_product_size',
+                'label': 'Talla',
+                'type': 'text',
+                'placeholder': 'Opcional'
+            },
+            {
+                'slug': 'material',
+                'meta_key': '_wpsso_product_material',
+                'label': 'Material',
+                'type': 'text',
+                'placeholder': 'Opcional'
+            },
+        ]
         self.app_name = app_name
         self.app_website = app_website
         self.app_version = app_version
@@ -231,7 +330,7 @@ class MainWindow(QMainWindow):
         header_layout = QHBoxLayout()
         
         site_label = QLabel("Sitio WooCommerce:")
-        site_label.setFont(QFont("Arial", 11, QFont.Bold))
+        site_label.setFont(QFont(self.serif_font_family, 11, QFont.Bold))
         header_layout.addWidget(site_label)
         
         self.site_combo = QComboBox()
@@ -307,7 +406,7 @@ class MainWindow(QMainWindow):
         
         # EAN/ISBN (Campo crítico)
         ean_label = QLabel("📱 EAN/ISBN:")
-        ean_label.setFont(QFont("Arial", 10, QFont.Bold))
+        ean_label.setFont(QFont(self.serif_font_family, 10, QFont.Bold))
         
         ean_layout = QHBoxLayout()
         self.ean_input = QLineEdit()
@@ -369,6 +468,13 @@ class MainWindow(QMainWindow):
         self.excerpt_input.setPlaceholderText("Texto breve para la descripción corta del producto")
         self.excerpt_input.setMaximumHeight(100)
         form_layout.addRow(excerpt_label, self.excerpt_input)
+
+        # Descripción larga
+        content_label = QLabel("Descripción larga:")
+        self.long_description_input = QTextEdit()
+        self.long_description_input.setPlaceholderText("Reseña o descripción completa del libro")
+        self.long_description_input.setMaximumHeight(180)
+        form_layout.addRow(content_label, self.long_description_input)
 
         # Dimensiones
         dimensions_label = QLabel("Dimensiones (cm):")
@@ -473,34 +579,76 @@ class MainWindow(QMainWindow):
         
         form_layout.addRow(cover_label, cover_layout)
 
-        # Sección avanzada de custom fields
+        # Sección avanzada
         advanced_title = QLabel("──────── Opciones avanzadas ────────")
         advanced_title.setStyleSheet("color: #bdbdbd;")
         form_layout.addRow(advanced_title)
 
-        self.advanced_group = QGroupBox("Activar custom fields (ACF + WooCommerce)")
+        self.advanced_group = QGroupBox("Activar zona avanzada")
         self.advanced_group.setCheckable(True)
         self.advanced_group.setChecked(False)
         advanced_layout = QVBoxLayout(self.advanced_group)
 
         advanced_hint = QLabel(
-            "Solo se enviarán los campos que tengan valor. "
-            "Los no rellenados se dejan intactos en WooCommerce."
+            "Compatibilidad integrada con ACF y WPSSO Google Merchant. "
+            "Solo se enviaran metadatos con valor."
         )
         advanced_hint.setWordWrap(True)
         advanced_layout.addWidget(advanced_hint)
 
         advanced_actions = QHBoxLayout()
-        self.reload_meta_fields_btn = QPushButton("🔄 Recargar campos")
+        self.reload_meta_fields_btn = QPushButton("🔄 Recargar campos ACF")
         self.reload_meta_fields_btn.clicked.connect(self.load_product_meta_fields)
         advanced_actions.addWidget(self.reload_meta_fields_btn)
+
+        self.wpsso_autofill_btn = QPushButton("⚙️ Autocompletar WPSSO")
+        self.wpsso_autofill_btn.clicked.connect(lambda: self._apply_wpsso_autofill(force=True))
+        advanced_actions.addWidget(self.wpsso_autofill_btn)
+
         advanced_actions.addStretch()
         advanced_layout.addLayout(advanced_actions)
 
-        self.advanced_meta_container = QWidget()
-        self.advanced_meta_form_layout = QFormLayout(self.advanced_meta_container)
-        self.advanced_meta_form_layout.setSpacing(8)
-        advanced_layout.addWidget(self.advanced_meta_container)
+        self.advanced_tabs = QTabWidget()
+
+        # Tab 1: Campos personalizados (ACF/meta)
+        self.advanced_custom_tab = QWidget()
+        custom_layout = QVBoxLayout(self.advanced_custom_tab)
+        custom_intro = QLabel("Campos personalizados por grupos ACF (desplegables) y metacampos detectados.")
+        custom_intro.setWordWrap(True)
+        custom_layout.addWidget(custom_intro)
+
+        self.advanced_meta_groups_toolbox = QToolBox()
+        custom_layout.addWidget(self.advanced_meta_groups_toolbox)
+
+        self.advanced_tabs.addTab(self.advanced_custom_tab, "Campos personalizados")
+
+        # Tab 2: WPSSO Google Merchant
+        self.advanced_wpsso_tab = QWidget()
+        wpsso_layout = QVBoxLayout(self.advanced_wpsso_tab)
+
+        self.wpsso_autofill_checkbox = QCheckBox("Autocompletar valores WPSSO desde datos WooCommerce")
+        self.wpsso_autofill_checkbox.setChecked(True)
+        wpsso_layout.addWidget(self.wpsso_autofill_checkbox)
+
+        wpsso_reco = QLabel(
+            "Recomendaciones:\n"
+            "- GTIN13 y MPN se completan desde ISBN cuando es posible.\n"
+            "- Marca se completa desde marca/editorial.\n"
+            "- Condicion y availability se sugieren automaticamente.\n"
+            "- Revisa los metakeys si tu instalacion WPSSO usa variantes."
+        )
+        wpsso_reco.setWordWrap(True)
+        wpsso_layout.addWidget(wpsso_reco)
+
+        self.wpsso_form_container = QWidget()
+        self.wpsso_form_layout = QFormLayout(self.wpsso_form_container)
+        self.wpsso_form_layout.setSpacing(8)
+        wpsso_layout.addWidget(self.wpsso_form_container)
+
+        self.advanced_tabs.addTab(self.advanced_wpsso_tab, "WPSSO Google Merchant")
+        advanced_layout.addWidget(self.advanced_tabs)
+
+        self._init_wpsso_fields()
 
         form_layout.addRow(self.advanced_group)
         
@@ -642,6 +790,7 @@ class MainWindow(QMainWindow):
         """Se ejecuta cuando se cargan los custom fields avanzados"""
         self.reload_meta_fields_btn.setEnabled(True)
         self._render_advanced_meta_fields(fields)
+        self._apply_wpsso_autofill(force=False)
         if fields and not self.advanced_group.isChecked():
             self.advanced_group.setChecked(True)
         if fields:
@@ -788,9 +937,16 @@ class MainWindow(QMainWindow):
         self.author_input.setText(book_info.get('author', ''))
         self.publisher_input.setText(book_info.get('publisher', ''))
         self.format_combo.setCurrentText(book_info.get('format', 'Tapa blanda'))
+
+        raw_description = book_info.get('description', '')
+        clean_description = self._clean_book_description(raw_description)
+        self.excerpt_input.setText(self._build_excerpt_from_description(clean_description))
+        self.long_description_input.setText(clean_description)
         
         if book_info.get('edition_year'):
             self.year_spin.setValue(book_info['edition_year'])
+
+        self._apply_wpsso_autofill(force=False)
 
         # Limpiar portada anterior al cargar info nueva
         self.cover_path = None
@@ -880,6 +1036,8 @@ class MainWindow(QMainWindow):
         self.year_spin.setValue(2024)
         self.price_input.setValue(4.0)
         self.stock_spin.setValue(1)
+        self.excerpt_input.clear()
+        self.long_description_input.clear()
         self.cover_path = None
         self.cover_url = None
         self.cover_preview.setText("Sin imagen")
@@ -887,6 +1045,9 @@ class MainWindow(QMainWindow):
         self.advanced_group.setChecked(False)
         for row in self.advanced_meta_rows:
             self._clear_advanced_meta_input(row.get('input'))
+        for row in self.wpsso_rows:
+            self._clear_advanced_meta_input(row.get('input'))
+        self._apply_wpsso_autofill(force=False)
         self.ean_input.setFocus()
 
     def clear_book_fields(self):
@@ -897,6 +1058,7 @@ class MainWindow(QMainWindow):
         self.publisher_input.clear()
         self.year_spin.setValue(2024)
         self.excerpt_input.clear()
+        self.long_description_input.clear()
         self.cover_path = None
         self.cover_url = None
         self.cover_preview.setPixmap(QPixmap())
@@ -938,11 +1100,13 @@ class MainWindow(QMainWindow):
             'cover_image_path': self.cover_path,
             'categories': self._get_selected_categories(),
             'short_description': self.excerpt_input.toPlainText().strip() or self._build_short_description(),
+            'long_description': self.long_description_input.toPlainText().strip() or self._build_long_description(),
             'length': self.length_input.value() or None,
             'width': self.width_input.value() or None,
             'height': self.height_input.value() or None,
             'weight': self.weight_input.value() or None,
-            'advanced_meta_entries': self._get_filled_advanced_meta()
+            'advanced_meta_entries': self._get_filled_advanced_meta(),
+            'wpsso_meta_entries': self._get_filled_wpsso_meta()
         }
         
         # Crear thread de subida
@@ -1028,6 +1192,52 @@ class MainWindow(QMainWindow):
             parts.append(self.format_combo.currentText())
         return ' · '.join(parts)[:250]
 
+    def _build_long_description(self):
+        """Genera una descripción larga cuando no hay reseña original disponible."""
+        manual_long = self.long_description_input.toPlainText().strip()
+        if manual_long:
+            return manual_long
+
+        if self.excerpt_input.toPlainText().strip():
+            return self.excerpt_input.toPlainText().strip()
+
+        fallback = []
+        if self.title_input.text().strip():
+            fallback.append(f"{self.title_input.text().strip()}")
+        if self.author_input.text().strip():
+            fallback.append(f"Autor: {self.author_input.text().strip()}")
+        if self.publisher_input.text().strip():
+            fallback.append(f"Editorial: {self.publisher_input.text().strip()}")
+        if self.format_combo.currentText():
+            fallback.append(f"Formato: {self.format_combo.currentText()}")
+        if self.year_spin.value() > 1900:
+            fallback.append(f"Año de edición: {self.year_spin.value()}")
+
+        return '\n'.join(fallback).strip()
+
+    def _clean_book_description(self, text):
+        """Normaliza descripción de APIs a texto legible."""
+        if isinstance(text, dict):
+            text = text.get('value', '')
+        if not isinstance(text, str):
+            return ''
+
+        cleaned = text.replace('\r\n', '\n').replace('\r', '\n').strip()
+        # Mantener texto en bruto: solo normalizamos espacios duplicados por línea.
+        cleaned_lines = [' '.join(line.split()) for line in cleaned.split('\n')]
+        cleaned = '\n'.join([line for line in cleaned_lines if line])
+        return cleaned
+
+    def _build_excerpt_from_description(self, description_text):
+        """Construye extracto corto desde una descripción original."""
+        if not description_text:
+            return self._build_short_description()
+
+        snippet = description_text.split('\n', 1)[0].strip()
+        if len(snippet) > 250:
+            snippet = snippet[:247].rstrip() + '...'
+        return snippet
+
     def _render_advanced_meta_fields(self, fields):
         """Renderiza dinámicamente los campos avanzados de metadatos."""
         existing_values = {
@@ -1036,61 +1246,166 @@ class MainWindow(QMainWindow):
             if row.get('input')
         }
 
-        while self.advanced_meta_form_layout.rowCount() > 0:
-            self.advanced_meta_form_layout.removeRow(0)
+        while self.advanced_meta_groups_toolbox.count() > 0:
+            self.advanced_meta_groups_toolbox.removeItem(0)
 
         self.advanced_meta_rows = []
 
         if not fields:
+            empty_page = QWidget()
+            empty_layout = QVBoxLayout(empty_page)
             empty_label = QLabel("No se detectaron custom fields en el sitio.")
             empty_label.setStyleSheet("color: #bdbdbd;")
-            self.advanced_meta_form_layout.addRow(empty_label)
+            empty_layout.addWidget(empty_label)
+            empty_layout.addStretch()
+            self.advanced_meta_groups_toolbox.addItem(empty_page, "Sin campos")
             return
 
+        fields_by_group = {}
         for field in fields:
-            key = str(field.get('key', '')).strip()
-            if not key:
-                continue
+            group_name = str(field.get('group_name') or 'Otros metacampos')
+            if group_name not in fields_by_group:
+                fields_by_group[group_name] = []
+            fields_by_group[group_name].append(field)
 
-            label_text = str(field.get('label') or key)
-            source = str(field.get('source') or 'meta')
-            field_type = str(field.get('type') or 'text')
-            acf_field_key = str(field.get('acf_field_key') or '').strip()
-            field_choices = field.get('choices')
+        for group_name, group_fields in fields_by_group.items():
+            group_widget = QWidget()
+            group_layout = QFormLayout(group_widget)
+            group_layout.setSpacing(8)
 
-            row_label = QLabel(f"{label_text} ({key}) [{source}:{field_type}]")
-            if field_type in ('select', 'radio', 'button_group', 'checkbox', 'true_false', 'boolean'):
-                row_input = QComboBox()
-                row_input.addItem('Sin valor', '')
+            for field in group_fields:
+                key = str(field.get('key', '')).strip()
+                if not key:
+                    continue
 
-                if field_type in ('true_false', 'boolean'):
-                    row_input.addItem('Si', '1')
-                    row_input.addItem('No', '0')
+                label_text = str(field.get('label') or key)
+                source = str(field.get('source') or 'meta')
+                field_type = str(field.get('type') or 'text')
+                acf_field_key = str(field.get('acf_field_key') or '').strip()
+                field_choices = field.get('choices')
+
+                row_label = QLabel(f"{label_text} ({key}) [{source}:{field_type}]")
+                if field_type in ('select', 'radio', 'button_group', 'checkbox', 'true_false', 'boolean'):
+                    row_input = QComboBox()
+                    row_input.addItem('Sin valor', '')
+
+                    if field_type in ('true_false', 'boolean'):
+                        row_input.addItem('Si', '1')
+                        row_input.addItem('No', '0')
+                    else:
+                        if isinstance(field_choices, dict):
+                            for option_value, option_label in field_choices.items():
+                                row_input.addItem(str(option_label), str(option_value))
+                        elif isinstance(field_choices, list):
+                            for option_value in field_choices:
+                                row_input.addItem(str(option_value), str(option_value))
+
+                    row_input.setToolTip('Opcional: deja "Sin valor" para no enviar')
                 else:
-                    if isinstance(field_choices, dict):
-                        for option_value, option_label in field_choices.items():
-                            row_input.addItem(str(option_label), str(option_value))
-                    elif isinstance(field_choices, list):
-                        for option_value in field_choices:
-                            row_input.addItem(str(option_value), str(option_value))
+                    row_input = QLineEdit()
+                    row_input.setPlaceholderText("Opcional: deja vacío para no enviar")
 
-                row_input.setToolTip('Opcional: deja "Sin valor" para no enviar')
+                if key in existing_values and existing_values[key]:
+                    self._set_advanced_meta_input_value(row_input, existing_values[key])
+
+                group_layout.addRow(row_label, row_input)
+                self.advanced_meta_rows.append({
+                    'key': key,
+                    'source': source,
+                    'type': field_type,
+                    'acf_field_key': acf_field_key,
+                    'choices': field_choices,
+                    'group_name': group_name,
+                    'input': row_input
+                })
+
+            self.advanced_meta_groups_toolbox.addItem(group_widget, group_name)
+
+    def _init_wpsso_fields(self):
+        """Inicializa campos de compatibilidad WPSSO Google Merchant."""
+        self.wpsso_rows = []
+        while self.wpsso_form_layout.rowCount() > 0:
+            self.wpsso_form_layout.removeRow(0)
+
+        for field in self.wpsso_defaults:
+            row_label = QLabel(f"{field['label']} ({field['meta_key']})")
+            if field.get('type') == 'choice':
+                row_input = QComboBox()
+                for option_value, option_label in field.get('choices', []):
+                    row_input.addItem(option_label, option_value)
             else:
                 row_input = QLineEdit()
-                row_input.setPlaceholderText("Opcional: deja vacío para no enviar")
+                row_input.setPlaceholderText(field.get('placeholder', 'Opcional'))
 
-            if key in existing_values and existing_values[key]:
-                self._set_advanced_meta_input_value(row_input, existing_values[key])
-
-            self.advanced_meta_form_layout.addRow(row_label, row_input)
-            self.advanced_meta_rows.append({
-                'key': key,
-                'source': source,
-                'type': field_type,
-                'acf_field_key': acf_field_key,
-                'choices': field_choices,
+            self.wpsso_form_layout.addRow(row_label, row_input)
+            self.wpsso_rows.append({
+                'slug': field['slug'],
+                'key': field['meta_key'],
                 'input': row_input
             })
+
+    def _compute_wpsso_defaults(self):
+        """Calcula valores sugeridos de WPSSO desde datos base del producto."""
+        isbn = ''.join(ch for ch in (self.ean_input.text().strip() or '') if ch.isdigit())
+        stock = self.stock_spin.value() if hasattr(self, 'stock_spin') else 0
+
+        defaults = {
+            'brand': self._get_selected_brand_name() or self.publisher_input.text().strip(),
+            'mpn': isbn,
+            'condition': 'new',
+            'availability': 'in stock' if stock > 0 else 'out of stock',
+            'google_category': 'Media > Books',
+        }
+
+        if len(isbn) == 13:
+            defaults['gtin13'] = isbn
+
+        return defaults
+
+    def _apply_wpsso_autofill(self, force=False):
+        """Aplica sugerencias WPSSO a campos vacíos o todos si force=True."""
+        if not hasattr(self, 'wpsso_rows'):
+            return
+        if not force and hasattr(self, 'wpsso_autofill_checkbox') and not self.wpsso_autofill_checkbox.isChecked():
+            return
+
+        defaults = self._compute_wpsso_defaults()
+        for row in self.wpsso_rows:
+            slug = row.get('slug')
+            widget = row.get('input')
+            value = defaults.get(slug)
+            if value is None:
+                continue
+
+            current = self._get_advanced_meta_input_value(widget)
+            if force or not current:
+                self._set_advanced_meta_input_value(widget, value)
+
+    def _get_filled_wpsso_meta(self):
+        """Obtiene metadatos WPSSO con relleno automático opcional."""
+        if not hasattr(self, 'advanced_group') or not self.advanced_group.isChecked():
+            return []
+
+        defaults = self._compute_wpsso_defaults() if self.wpsso_autofill_checkbox.isChecked() else {}
+        entries = []
+        for row in self.wpsso_rows:
+            slug = row.get('slug')
+            key = row.get('key')
+            widget = row.get('input')
+            value = self._get_advanced_meta_input_value(widget)
+
+            if not value and slug in defaults:
+                value = str(defaults[slug]).strip()
+
+            if not value:
+                continue
+
+            entries.append({
+                'key': key,
+                'value': value
+            })
+
+        return entries
 
     def _get_filled_advanced_meta(self):
         """Devuelve solo metacampos avanzados con valor para enviarlos al crear producto."""
@@ -1170,6 +1485,7 @@ class MainWindow(QMainWindow):
             QMainWindow {
                 background-color: #2b2b2b;
                 color: #ffffff;
+                font-family: "Libre Serif", "Times New Roman", "Times", "Liberation Serif", "DejaVu Serif", "Noto Serif";
             }
             QLabel {
                 color: #ffffff;
@@ -1182,7 +1498,7 @@ class MainWindow(QMainWindow):
                 color: #ffffff;
             }
             QPushButton {
-                background-color: #1976D2;
+                background-color: #B0642C;
                 color: white;
                 border: none;
                 border-radius: 4px;
@@ -1190,10 +1506,10 @@ class MainWindow(QMainWindow):
                 font-weight: bold;
             }
             QPushButton:hover {
-                background-color: #1565C0;
+                background-color: #9D5726;
             }
             QPushButton:pressed {
-                background-color: #0D47A1;
+                background-color: #7F461F;
             }
             QTabWidget::pane {
                 border: 1px solid #555;
@@ -1298,6 +1614,7 @@ class ProductUploadThread(QThread):
 
             # Meta personalizados: enviar solo los campos rellenados.
             advanced_meta_entries = self.product_data.get('advanced_meta_entries') or []
+            wpsso_meta_entries = self.product_data.get('wpsso_meta_entries') or []
             meta_data = []
             for entry in advanced_meta_entries:
                 key = str(entry.get('key', '')).strip()
@@ -1311,6 +1628,13 @@ class ProductUploadThread(QThread):
                 # Para ACF, guardar también el metacampo privado con el field key.
                 if acf_field_key:
                     meta_data.append({'key': f"_{key}", 'value': acf_field_key})
+
+            for entry in wpsso_meta_entries:
+                key = str(entry.get('key', '')).strip()
+                value = str(entry.get('value', '')).strip()
+                if not key or value == '':
+                    continue
+                meta_data.append({'key': key, 'value': value})
 
             if meta_data:
                 product_payload['meta_data'] = meta_data
@@ -1362,6 +1686,12 @@ class ProductUploadThread(QThread):
     
     def _build_product_description(self, product_data):
         """Construye la descripción del producto con HTML"""
+        long_description = (product_data.get('long_description') or '').strip()
+        if long_description:
+            paragraphs = [p.strip() for p in long_description.split('\n') if p.strip()]
+            if paragraphs:
+                return ''.join(f"<p>{html.escape(p)}</p>" for p in paragraphs)
+
         desc = f"<p><strong>Autor:</strong> {product_data.get('author', 'N/A')}</p>"
         desc += f"<p><strong>Editorial:</strong> {product_data.get('publisher', 'N/A')}</p>"
         desc += f"<p><strong>Formato:</strong> {product_data.get('format', 'N/A')}</p>"

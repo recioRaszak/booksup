@@ -11,6 +11,8 @@ Una aplicación moderna y ágil para cargar libros masivamente en tus sitios Woo
 - 💾 **Historial local**: Guarda registro de todos los productos subidos
 - ⚡ **Interfaz ágil**: Diseñada para catalogar rápidamente muchos libros
 - 🔒 **Credenciales seguras**: Almacenamiento local de API keys
+- 🧩 **Compatibilidad ACF**: Campos personalizados avanzados por grupos desplegables
+- 🏷️ **Compatibilidad WPSSO Google Merchant**: Soporte de microdatos y sugerencias automáticas
 
 ## 📋 Requisitos
 
