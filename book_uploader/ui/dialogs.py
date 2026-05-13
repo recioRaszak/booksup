@@ -3,7 +3,105 @@ from PyQt5.QtWidgets import (
     QTableWidget, QTableWidgetItem, QMessageBox, QHeaderView, QFormLayout
 )
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QFont
+from PyQt5.QtGui import QFont, QPixmap, QPainter, QColor
+
+
+class AppSplashDialog(QDialog):
+    """Splash/About modal reutilizable para branding de la app."""
+
+    def __init__(self, app_name, website_url, version, splash_image_path=None, parent=None):
+        super().__init__(parent)
+        self.app_name = app_name
+        self.website_url = website_url
+        self.version = version
+        self.splash_image_path = splash_image_path
+
+        self.setWindowTitle("Acerca de la aplicacion")
+        self.setModal(True)
+        self.setFixedSize(700, 620)
+        self.setStyleSheet(self._get_stylesheet())
+
+        self.init_ui()
+
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+
+        splash_label = QLabel()
+        splash_label.setAlignment(Qt.AlignCenter)
+        splash_label.setFixedSize(640, 480)
+        splash_label.setPixmap(self._load_splash_pixmap())
+        layout.addWidget(splash_label, alignment=Qt.AlignCenter)
+
+        title_label = QLabel(self.app_name)
+        title_label.setAlignment(Qt.AlignCenter)
+        title_label.setFont(QFont("Arial", 13, QFont.Bold))
+        layout.addWidget(title_label)
+
+        website_label = QLabel(f"Web: {self.website_url}")
+        website_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(website_label)
+
+        version_label = QLabel(f"Version: {self.version}")
+        version_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(version_label)
+
+        close_btn = QPushButton("Cerrar")
+        close_btn.setMinimumWidth(160)
+        close_btn.clicked.connect(self.accept)
+        layout.addWidget(close_btn, alignment=Qt.AlignCenter)
+
+    def show_for(self, duration_ms):
+        """Muestra el modal por N milisegundos y se cierra solo."""
+        from PyQt5.QtCore import QTimer
+
+        QTimer.singleShot(duration_ms, self.accept)
+        self.exec_()
+
+    def _load_splash_pixmap(self):
+        """Carga imagen de splash o genera placeholder 640x480."""
+        if self.splash_image_path:
+            pixmap = QPixmap(self.splash_image_path)
+            if not pixmap.isNull():
+                return pixmap.scaled(640, 480, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+
+        return self._build_placeholder_pixmap()
+
+    def _build_placeholder_pixmap(self):
+        """Placeholder visual para que el splash sea util sin assets finales."""
+        pixmap = QPixmap(640, 480)
+        pixmap.fill(QColor("#1f2632"))
+
+        painter = QPainter(pixmap)
+        painter.fillRect(0, 0, 640, 240, QColor("#243447"))
+        painter.setPen(QColor("#ffffff"))
+        painter.setFont(QFont("Arial", 24, QFont.Bold))
+        painter.drawText(pixmap.rect(), Qt.AlignCenter, "SPLASH PLACEHOLDER\n640 x 480")
+        painter.end()
+
+        return pixmap
+
+    def _get_stylesheet(self):
+        return """
+            QDialog {
+                background-color: #10151f;
+            }
+            QLabel {
+                color: #e3edf7;
+            }
+            QPushButton {
+                background-color: #1976D2;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 12px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #1565C0;
+            }
+        """
 
 
 class SiteSettingsDialog(QDialog):

@@ -1,8 +1,8 @@
 @echo off
-REM Script de instalación para Book Uploader en Windows
+REM Script de instalación para JORGE - Books to Woocommerce en Windows
 
 echo.
-echo 🚀 Book Uploader - Instalacion
+echo 🚀 JORGE - Books to Woocommerce - Instalacion
 echo ==============================
 echo.
 

@@ -1,9 +1,9 @@
 #!/bin/bash
 
-# Script de instalación para Book Uploader
+# Script de instalación para JORGE - Books to Woocommerce
 # Este script configura todo lo necesario para ejecutar la aplicación
 
-echo "🚀 Book Uploader - Instalación"
+echo "🚀 JORGE - Books to Woocommerce - Instalación"
 echo "=============================="
 echo ""
 

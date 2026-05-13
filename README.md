@@ -1,4 +1,4 @@
-# 📚 Book Uploader - Gestor de Productos WooCommerce
+# 📚 JORGE - Books to Woocommerce
 
 Una aplicación moderna y ágil para cargar libros masivamente en tus sitios WooCommerce usando códigos de barras (EAN/ISBN).
 
@@ -44,6 +44,12 @@ pip install -r requirements.txt
 
 ```bash
 python main.py
+```
+
+Tambien puedes lanzar con:
+
+```bash
+./"Jorge Books to Woocommerce"
 ```
 
 ### Configurar sitios WooCommerce
@@ -202,4 +208,4 @@ python main.py
 
 ---
 
-**Hecho con ❤️ para catalogadores de libros**
+**Hecho para catalogadores de libros**

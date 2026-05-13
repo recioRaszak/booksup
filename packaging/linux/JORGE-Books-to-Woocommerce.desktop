@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=JORGE - Books to Woocommerce
+Comment=Uploader de libros para WooCommerce
+Exec=/opt/jorge-books-to-woocommerce/JORGE-Books-to-Woocommerce
+Icon=jorge-books-to-woocommerce
+Terminal=false
+Categories=Office;Utility;
+StartupNotify=true

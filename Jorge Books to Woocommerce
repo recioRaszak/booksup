@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Lanzador local de JORGE - Books to Woocommerce
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+APP_MAIN="$SCRIPT_DIR/main.py"
+
+if [ -x "$SCRIPT_DIR/venv/bin/python" ]; then
+    exec "$SCRIPT_DIR/venv/bin/python" "$APP_MAIN"
+fi
+
+exec python3 "$APP_MAIN"

@@ -1,0 +1,246 @@
+name: Build And Release Signed Installers
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Prepare venv
+        run: |
+          python -m venv venv
+
+      - name: Build Linux binary
+        run: |
+          bash packaging/scripts/build_linux.sh
+
+      - name: Build Linux DEB
+        run: |
+          bash packaging/scripts/package_linux_deb.sh
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-installers-signed
+          path: |
+            dist/JORGE-Books-to-Woocommerce/**
+            dist-installer/linux/*.deb
+
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Prepare venv
+        shell: pwsh
+        run: |
+          python -m venv venv
+
+      - name: Build Windows binary
+        shell: cmd
+        run: |
+          packaging\scripts\build_windows.bat
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+
+      - name: Build EXE installer
+        shell: pwsh
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "packaging\installers\windows\JORGE-Books-to-Woocommerce.iss"
+
+      - name: Check Windows signing secrets
+        id: win_sign
+        shell: pwsh
+        run: |
+          if ("${{ secrets.WIN_SIGN_CERT_PFX_BASE64 }}" -and "${{ secrets.WIN_SIGN_CERT_PASSWORD }}") {
+            "enabled=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          } else {
+            "enabled=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          }
+
+      - name: Decode signing certificate
+        if: steps.win_sign.outputs.enabled == 'true'
+        shell: pwsh
+        run: |
+          [IO.File]::WriteAllBytes("windows-sign-cert.pfx", [Convert]::FromBase64String("${{ secrets.WIN_SIGN_CERT_PFX_BASE64 }}"))
+
+      - name: Sign Windows binaries and installer
+        if: steps.win_sign.outputs.enabled == 'true'
+        shell: pwsh
+        env:
+          WIN_SIGN_CERT_PASSWORD: ${{ secrets.WIN_SIGN_CERT_PASSWORD }}
+          WIN_SIGN_TIMESTAMP_URL: ${{ secrets.WIN_SIGN_TIMESTAMP_URL }}
+        run: |
+          $timestamp = $env:WIN_SIGN_TIMESTAMP_URL
+          if (-not $timestamp) { $timestamp = "http://timestamp.digicert.com" }
+
+          $targets = @()
+          $targets += Get-ChildItem -Path "dist/JORGE-Books-to-Woocommerce" -Filter "*.exe" -File -ErrorAction SilentlyContinue
+          $targets += Get-ChildItem -Path "dist-installer/windows" -Filter "*.exe" -File -ErrorAction SilentlyContinue
+
+          if ($targets.Count -eq 0) {
+            throw "No se encontraron archivos .exe para firmar"
+          }
+
+          foreach ($file in $targets) {
+            Write-Host "Firmando $($file.FullName)"
+            & signtool sign /f "windows-sign-cert.pfx" /p "$env:WIN_SIGN_CERT_PASSWORD" /tr "$timestamp" /td SHA256 /fd SHA256 "$($file.FullName)"
+            if ($LASTEXITCODE -ne 0) { throw "Error firmando $($file.FullName)" }
+          }
+
+      - name: Warn unsigned Windows artifacts
+        if: steps.win_sign.outputs.enabled != 'true'
+        shell: pwsh
+        run: |
+          Write-Host "::warning::No hay secretos de firma Windows. Se publicaran artefactos sin firma."
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installers-signed
+          path: |
+            dist/JORGE-Books-to-Woocommerce/**
+            dist-installer/windows/*.exe
+
+  build-macos:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Prepare venv
+        run: |
+          python -m venv venv
+
+      - name: Build macOS app
+        run: |
+          bash packaging/scripts/build_macos.sh
+
+      - name: Check macOS signing and notarization secrets
+        id: mac_sign
+        run: |
+          if [ -n "${{ secrets.APPLE_SIGN_CERT_P12_BASE64 }}" ] && [ -n "${{ secrets.APPLE_SIGN_CERT_PASSWORD }}" ] && [ -n "${{ secrets.APPLE_SIGN_IDENTITY }}" ] && [ -n "${{ secrets.APPLE_NOTARY_APPLE_ID }}" ] && [ -n "${{ secrets.APPLE_NOTARY_APP_PASSWORD }}" ] && [ -n "${{ secrets.APPLE_NOTARY_TEAM_ID }}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Import Apple certificate
+        if: steps.mac_sign.outputs.enabled == 'true'
+        env:
+          APPLE_SIGN_CERT_P12_BASE64: ${{ secrets.APPLE_SIGN_CERT_P12_BASE64 }}
+          APPLE_SIGN_CERT_PASSWORD: ${{ secrets.APPLE_SIGN_CERT_PASSWORD }}
+        run: |
+          echo "$APPLE_SIGN_CERT_P12_BASE64" | base64 --decode > apple-signing-cert.p12
+          security create-keychain -p temp-pass build.keychain
+          security set-keychain-settings -lut 21600 build.keychain
+          security unlock-keychain -p temp-pass build.keychain
+          security import apple-signing-cert.p12 -k build.keychain -P "$APPLE_SIGN_CERT_PASSWORD" -T /usr/bin/codesign
+          security list-keychains -d user -s build.keychain
+          security set-key-partition-list -S apple-tool:,apple: -s -k temp-pass build.keychain
+
+      - name: Codesign app bundle
+        if: steps.mac_sign.outputs.enabled == 'true'
+        env:
+          APPLE_SIGN_IDENTITY: ${{ secrets.APPLE_SIGN_IDENTITY }}
+        run: |
+          codesign --force --deep --options runtime --timestamp --sign "$APPLE_SIGN_IDENTITY" "dist/JORGE-Books-to-Woocommerce.app"
+
+      - name: Build DMG
+        run: |
+          bash packaging/macos/create_dmg.sh
+
+      - name: Notarize and staple DMG
+        if: steps.mac_sign.outputs.enabled == 'true'
+        env:
+          APPLE_NOTARY_APPLE_ID: ${{ secrets.APPLE_NOTARY_APPLE_ID }}
+          APPLE_NOTARY_APP_PASSWORD: ${{ secrets.APPLE_NOTARY_APP_PASSWORD }}
+          APPLE_NOTARY_TEAM_ID: ${{ secrets.APPLE_NOTARY_TEAM_ID }}
+        run: |
+          xcrun notarytool submit "dist-installer/macos/JORGE-Books-to-Woocommerce.dmg" \
+            --apple-id "$APPLE_NOTARY_APPLE_ID" \
+            --password "$APPLE_NOTARY_APP_PASSWORD" \
+            --team-id "$APPLE_NOTARY_TEAM_ID" \
+            --wait
+
+          xcrun stapler staple "dist-installer/macos/JORGE-Books-to-Woocommerce.dmg"
+
+      - name: Warn unsigned and non-notarized macOS artifacts
+        if: steps.mac_sign.outputs.enabled != 'true'
+        run: |
+          echo "::warning::No hay secretos Apple. Se publicara DMG sin firma ni notarizacion."
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-installers-signed
+          path: |
+            dist/JORGE-Books-to-Woocommerce.app/**
+            dist-installer/macos/*.dmg
+
+  publish-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - build-linux
+      - build-windows
+      - build-macos
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download Linux artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-installers-signed
+          path: release-artifacts/linux
+
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-installers-signed
+          path: release-artifacts/windows
+
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-installers-signed
+          path: release-artifacts/macos
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-artifacts/linux/**/*.deb
+            release-artifacts/windows/**/*.exe
+            release-artifacts/macos/**/*.dmg

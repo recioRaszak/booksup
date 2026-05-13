@@ -367,9 +367,10 @@ class WooCommerceAPI:
     def get_brands(self):
         """Obtiene marcas desde el endpoint personalizado del plugin."""
         try:
+            endpoint_auth = self.wp_auth if self.wp_auth else self.auth
             response = requests.get(
                 f"{self.site_url}/wp-json/book-uploader/v1/brands",
-                auth=self.auth,
+                auth=endpoint_auth,
                 timeout=10
             )
             if response.status_code == 200:
@@ -386,9 +387,10 @@ class WooCommerceAPI:
     def create_brand(self, brand_name):
         """Crea una marca/product_brand en WordPress a través del plugin."""
         try:
+            endpoint_auth = self.wp_auth if self.wp_auth else self.auth
             response = requests.post(
                 f"{self.site_url}/wp-json/book-uploader/v1/brands",
-                auth=self.auth,
+                auth=endpoint_auth,
                 json={'name': brand_name},
                 timeout=10
             )
@@ -403,12 +405,62 @@ class WooCommerceAPI:
             print("Error al crear marca:", e)
             return None
 
+    def get_product_meta_fields(self):
+        """Obtiene metacampos disponibles para productos (ACF + custom fields)."""
+        try:
+            endpoint_auth = self.wp_auth if self.wp_auth else self.auth
+            response = requests.get(
+                f"{self.site_url}/wp-json/book-uploader/v1/product-meta-fields",
+                auth=endpoint_auth,
+                timeout=10
+            )
+            if response.status_code == 200:
+                data = response.json()
+                if isinstance(data, dict):
+                    return data
+                return {'fields': []}
+
+            self.last_error = self._extract_error_message(response)
+            print("[DEBUG] Error al obtener metacampos de producto:", self.last_error)
+            raise RuntimeError(f"HTTP {response.status_code}: {self.last_error}")
+        except Exception as e:
+            self.last_error = str(e)
+            print("Error al obtener metacampos de producto:", e)
+            raise
+
+    def debug_plugin_status(self):
+        """Endpoint de debug para verificar que el plugin está activo y cargado."""
+        try:
+            endpoint_auth = self.wp_auth if self.wp_auth else self.auth
+            response = requests.get(
+                f"{self.site_url}/wp-json/book-uploader/v1/debug",
+                auth=endpoint_auth,
+                timeout=10
+            )
+            if response.status_code == 200:
+                return response.json()
+            
+            self.last_error = self._extract_error_message(response)
+            print(f"[DEBUG] Error al consultar plugin status: {self.last_error}")
+            return {
+                'error': f'HTTP {response.status_code}: {self.last_error}',
+                'plugin_active': False
+            }
+        except Exception as e:
+            self.last_error = str(e)
+            print(f"Error al consultar plugin status: {e}")
+            return {
+                'error': str(e),
+                'plugin_active': False
+            }
+
     def assign_brand_to_product(self, product_id, brand_id):
         """Asocia una marca product_brand a un producto."""
         try:
+            endpoint_auth = self.wp_auth if self.wp_auth else self.auth
             response = requests.post(
                 f"{self.site_url}/wp-json/book-uploader/v1/products/{product_id}/brand",
-                auth=self.auth,
+                auth=endpoint_auth,
                 json={'brand_id': int(brand_id)},
                 timeout=10
             )

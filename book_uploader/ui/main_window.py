@@ -2,7 +2,7 @@ from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QComboBox, QSpinBox, QDoubleSpinBox, QTextEdit, QTabWidget,
     QScrollArea, QMessageBox, QProgressDialog, QTableWidget, QTableWidgetItem,
-    QFileDialog, QHeaderView, QListWidget, QListWidgetItem
+    QFileDialog, QHeaderView, QListWidget, QListWidgetItem, QGroupBox, QAction
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QTimer
 from PyQt5.QtGui import QPixmap, QFont, QIcon
@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import requests
 
+from book_uploader import APP_NAME, APP_WEBSITE, __version__
 from book_uploader.database.db import Database
 from book_uploader.api.openbooks import OpenBooksAPI, ExternalBookSourcesAPI
 from book_uploader.api.google_books import GoogleBooksAPI
@@ -20,7 +21,7 @@ from book_uploader.api.woocommerce import WooCommerceAPI
 from book_uploader.utils.helpers import (
     get_cover_path, validate_isbn, format_price, truncate_text, get_covers_dir
 )
-from book_uploader.ui.dialogs import SiteSettingsDialog
+from book_uploader.ui.dialogs import SiteSettingsDialog, AppSplashDialog
 
 
 class CategoriesLoadThread(QThread):
@@ -87,11 +88,39 @@ class BrandLoadThread(QThread):
             self.error_occurred.emit(f"Error al cargar marcas: {str(e)}")
 
 
+class ProductMetaFieldsLoadThread(QThread):
+    """Thread para cargar metacampos de producto sin bloquear UI"""
+
+    fields_loaded = pyqtSignal(list)
+    error_occurred = pyqtSignal(str)
+
+    def __init__(self, site):
+        super().__init__()
+        self.site = site
+
+    def run(self):
+        try:
+            from book_uploader.api.woocommerce import WooCommerceAPI
+            api = WooCommerceAPI(
+                self.site['url'],
+                self.site['consumer_key'],
+                self.site['consumer_secret'],
+                self.site.get('wp_username'),
+                self.site.get('wp_password')
+            )
+            response = api.get_product_meta_fields()
+            fields = response.get('fields', []) if isinstance(response, dict) else []
+            self.fields_loaded.emit(fields)
+        except Exception as e:
+            self.error_occurred.emit(f"Error al cargar custom fields: {str(e)}")
+
+
 class BookFetchThread(QThread):
     """Thread para buscar información del libro sin bloquear UI"""
     
     book_data_fetched = pyqtSignal(dict)
     error_occurred = pyqtSignal(str)
+    source_changed = pyqtSignal(str)
     
     def __init__(self, isbn):
         super().__init__()
@@ -99,11 +128,13 @@ class BookFetchThread(QThread):
     
     def run(self):
         try:
-            # Intentar primero con OpenLibrary
+            self.source_changed.emit("OpenLibrary")
+            # Intentar primero con OpenLibrary (incluye fallback interno search API)
             book_info = OpenBooksAPI.get_book_by_isbn(self.isbn)
             
             if book_info:
                 if not book_info.get('publisher') or not book_info.get('cover_url'):
+                    self.source_changed.emit("Fuentes externas (Casa del Libro / IberLibro)")
                     fallback = ExternalBookSourcesAPI.get_book_by_isbn(self.isbn)
                     if fallback:
                         for key, value in fallback.items():
@@ -113,8 +144,10 @@ class BookFetchThread(QThread):
                 return
 
             # Intentar con Google Books
+            self.source_changed.emit("Google Books")
             book_info = GoogleBooksAPI.get_book_by_isbn(self.isbn)
             if book_info and (not book_info.get('publisher') or not book_info.get('cover_url')):
+                self.source_changed.emit("Fuentes externas (Casa del Libro / IberLibro)")
                 fallback = ExternalBookSourcesAPI.get_book_by_isbn(self.isbn)
                 if fallback:
                     for key, value in fallback.items():
@@ -124,6 +157,13 @@ class BookFetchThread(QThread):
             if book_info:
                 self.book_data_fetched.emit(book_info)
             else:
+                self.source_changed.emit("Fuentes externas (Casa del Libro / IberLibro)")
+                external_only, source_name = ExternalBookSourcesAPI.get_book_by_isbn_with_source(self.isbn)
+                if external_only:
+                    if source_name:
+                        self.source_changed.emit(source_name)
+                    self.book_data_fetched.emit(external_only)
+                    return
                 self.error_occurred.emit("No se encontró información para este ISBN")
         except Exception as e:
             self.error_occurred.emit(f"Error al buscar: {str(e)}")
@@ -157,7 +197,7 @@ class CoverDownloadThread(QThread):
 class MainWindow(QMainWindow):
     """Ventana principal de la aplicación"""
     
-    def __init__(self):
+    def __init__(self, app_name=APP_NAME, app_website=APP_WEBSITE, app_version=__version__, splash_image_path=None):
         super().__init__()
         self.db = Database()
         self.current_site = None
@@ -165,8 +205,14 @@ class MainWindow(QMainWindow):
         self.cover_path = None
         self.book_fetch_thread = None
         self.cover_download_thread = None
+        self.book_search_progress = None
+        self.advanced_meta_rows = []
+        self.app_name = app_name
+        self.app_website = app_website
+        self.app_version = app_version
+        self.splash_image_path = splash_image_path
         
-        self.setWindowTitle("📚 Book Uploader - WooCommerce")
+        self.setWindowTitle(f"📚 {self.app_name}")
         self.setGeometry(100, 100, 1000, 800)
         self.setStyleSheet(self._get_stylesheet())
         
@@ -174,6 +220,8 @@ class MainWindow(QMainWindow):
     
     def init_ui(self):
         """Inicializa la interfaz"""
+        self._setup_menu_bar()
+
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         
@@ -212,6 +260,37 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Listo")
         
         self.refresh_sites()
+
+    def _setup_menu_bar(self):
+        """Crea menú superior con acciones de ayuda/about."""
+        menubar = self.menuBar()
+        ayuda_menu = menubar.addMenu("Ayuda")
+
+        about_action = QAction("Acerca de", self)
+        about_action.triggered.connect(self.show_about_dialog)
+        ayuda_menu.addAction(about_action)
+
+    def show_startup_splash(self, duration_ms=2600):
+        """Muestra splash modal por unos segundos al iniciar la app."""
+        splash = AppSplashDialog(
+            app_name=self.app_name,
+            website_url=self.app_website,
+            version=self.app_version,
+            splash_image_path=self.splash_image_path,
+            parent=self
+        )
+        splash.show_for(duration_ms)
+
+    def show_about_dialog(self):
+        """Abre el modal About desde el menú superior."""
+        splash = AppSplashDialog(
+            app_name=self.app_name,
+            website_url=self.app_website,
+            version=self.app_version,
+            splash_image_path=self.splash_image_path,
+            parent=self
+        )
+        splash.exec_()
     
     def create_add_book_tab(self):
         """Crea la pestaña de agregar libro"""
@@ -393,6 +472,37 @@ class MainWindow(QMainWindow):
         cover_layout.addLayout(cover_button_layout)
         
         form_layout.addRow(cover_label, cover_layout)
+
+        # Sección avanzada de custom fields
+        advanced_title = QLabel("──────── Opciones avanzadas ────────")
+        advanced_title.setStyleSheet("color: #bdbdbd;")
+        form_layout.addRow(advanced_title)
+
+        self.advanced_group = QGroupBox("Activar custom fields (ACF + WooCommerce)")
+        self.advanced_group.setCheckable(True)
+        self.advanced_group.setChecked(False)
+        advanced_layout = QVBoxLayout(self.advanced_group)
+
+        advanced_hint = QLabel(
+            "Solo se enviarán los campos que tengan valor. "
+            "Los no rellenados se dejan intactos en WooCommerce."
+        )
+        advanced_hint.setWordWrap(True)
+        advanced_layout.addWidget(advanced_hint)
+
+        advanced_actions = QHBoxLayout()
+        self.reload_meta_fields_btn = QPushButton("🔄 Recargar campos")
+        self.reload_meta_fields_btn.clicked.connect(self.load_product_meta_fields)
+        advanced_actions.addWidget(self.reload_meta_fields_btn)
+        advanced_actions.addStretch()
+        advanced_layout.addLayout(advanced_actions)
+
+        self.advanced_meta_container = QWidget()
+        self.advanced_meta_form_layout = QFormLayout(self.advanced_meta_container)
+        self.advanced_meta_form_layout.setSpacing(8)
+        advanced_layout.addWidget(self.advanced_meta_container)
+
+        form_layout.addRow(self.advanced_group)
         
         self.add_book_scroll.setWidget(form_widget)
         layout.addWidget(self.add_book_scroll)
@@ -472,8 +582,10 @@ class MainWindow(QMainWindow):
             # Cargar categorías y marcas del sitio
             self.load_categories()
             self.load_brands()
+            self.load_product_meta_fields()
         else:
             self.current_site = None
+            self._render_advanced_meta_fields([])
     
     def load_categories(self):
         """Carga las categorías disponibles del sitio"""
@@ -501,6 +613,18 @@ class MainWindow(QMainWindow):
         self.brand_load_thread.error_occurred.connect(self.on_brands_error)
         self.brand_load_thread.start()
 
+    def load_product_meta_fields(self):
+        """Carga custom fields de producto (ACF + meta) desde endpoint del plugin"""
+        if not self.current_site:
+            return
+
+        self.reload_meta_fields_btn.setEnabled(False)
+        self.set_status("Cargando custom fields de productos...")
+        self.meta_fields_load_thread = ProductMetaFieldsLoadThread(self.current_site)
+        self.meta_fields_load_thread.fields_loaded.connect(self.on_product_meta_fields_loaded)
+        self.meta_fields_load_thread.error_occurred.connect(self.on_product_meta_fields_error)
+        self.meta_fields_load_thread.start()
+
     def on_brands_loaded(self, brands):
         """Se ejecuta cuando se cargan las marcas"""
         self.brand_input.clear()
@@ -513,6 +637,61 @@ class MainWindow(QMainWindow):
         """Se ejecuta si hay error al cargar marcas"""
         self.brand_input.setEnabled(True)
         self.set_status(f"Error cargando marcas: {error}")
+
+    def on_product_meta_fields_loaded(self, fields):
+        """Se ejecuta cuando se cargan los custom fields avanzados"""
+        self.reload_meta_fields_btn.setEnabled(True)
+        self._render_advanced_meta_fields(fields)
+        if fields and not self.advanced_group.isChecked():
+            self.advanced_group.setChecked(True)
+        if fields:
+            self.set_status(f"Custom fields cargados: {len(fields)}")
+        else:
+            self.set_status("Sin custom fields detectados")
+
+    def on_product_meta_fields_error(self, error):
+        """Se ejecuta si hay error al cargar custom fields"""
+        self.reload_meta_fields_btn.setEnabled(True)
+        
+        # Intenta debug endpoint para diagnosticar
+        try:
+            from book_uploader.api.woocommerce import WooCommerceAPI
+            api = WooCommerceAPI(
+                self.current_site['url'],
+                self.current_site['consumer_key'],
+                self.current_site['consumer_secret'],
+                self.current_site.get('wp_username'),
+                self.current_site.get('wp_password')
+            )
+            debug_result = api.debug_plugin_status()
+            
+            if debug_result.get('plugin_active'):
+                # Plugin está activo pero hay otro error
+                error_msg = f"Error en custom fields: {error}"
+            else:
+                # Plugin no está activo
+                user_info = debug_result.get('current_user', {})
+                error_msg = (
+                    f"🔴 Plugin Book Uploader no detectado o no activo en: {self.current_site['url']}\n\n"
+                    f"Usuario actual: {user_info.get('login', 'N/A')} (ID: {user_info.get('ID', '?')})\n"
+                    f"Edit Posts: {debug_result.get('capabilities', {}).get('edit_posts', False)}\n\n"
+                    f"Pasos:\n"
+                    f"1. Verifica que wp-book-uploader-endpoints.php esté en wp-content/plugins/\n"
+                    f"2. Activa el plugin en WordPress Admin\n"
+                    f"3. Recarga la app y vuelve a intentar"
+                )
+        except Exception as e:
+            error_msg = (
+                f"No se pudo verificar estado del plugin. Error: {str(e)}\n\n"
+                f"Por favor verifica:\n"
+                f"1. Que wp-book-uploader-endpoints.php esté activado en WordPress\n"
+                f"2. Que las credenciales WP sean correctas (usuario real + app password)"
+            )
+        
+        self._render_advanced_meta_fields([])
+        self.set_status(f"Error cargando custom fields", 0)
+        QMessageBox.warning(self, "Error al cargar campos avanzados", error_msg)
+
     
     def on_categories_loaded(self, categories):
         """Se ejecuta cuando se cargan las categorías"""
@@ -566,16 +745,45 @@ class MainWindow(QMainWindow):
         
         # Mostrar que se está buscando
         self.fetch_btn_status = True
+        self.show_book_search_progress("Iniciando busqueda...")
         
         # Crear y ejecutar thread
         self.book_fetch_thread = BookFetchThread(ean)
         self.book_fetch_thread.book_data_fetched.connect(self.on_book_data_fetched)
         self.book_fetch_thread.error_occurred.connect(self.on_fetch_error)
+        self.book_fetch_thread.source_changed.connect(self.on_book_source_changed)
         self.set_status("Buscando datos del libro...")
         self.book_fetch_thread.start()
+
+    def show_book_search_progress(self, initial_message):
+        """Muestra un aviso no bloqueante con la fuente actual de busqueda."""
+        if self.book_search_progress:
+            self.book_search_progress.close()
+            self.book_search_progress.deleteLater()
+
+        self.book_search_progress = QProgressDialog(self)
+        self.book_search_progress.setWindowTitle("Busqueda de ISBN")
+        self.book_search_progress.setLabelText(f"Buscando ISBN en: {initial_message}")
+        self.book_search_progress.setCancelButton(None)
+        self.book_search_progress.setRange(0, 0)
+        self.book_search_progress.setAutoClose(False)
+        self.book_search_progress.setAutoReset(False)
+        self.book_search_progress.setWindowModality(Qt.NonModal)
+        self.book_search_progress.show()
+
+    def on_book_source_changed(self, source_name):
+        """Actualiza mensaje de progreso con la fuente de busqueda actual."""
+        self.set_status(f"Buscando ISBN en: {source_name}...")
+        if self.book_search_progress:
+            self.book_search_progress.setLabelText(f"Buscando ISBN en: {source_name}")
     
     def on_book_data_fetched(self, book_info):
         """Se ejecuta cuando se obtiene la información del libro"""
+        if self.book_search_progress:
+            self.book_search_progress.close()
+            self.book_search_progress.deleteLater()
+            self.book_search_progress = None
+
         self.title_input.setText(book_info.get('title', ''))
         self.author_input.setText(book_info.get('author', ''))
         self.publisher_input.setText(book_info.get('publisher', ''))
@@ -602,6 +810,11 @@ class MainWindow(QMainWindow):
     
     def on_fetch_error(self, error):
         """Se ejecuta en caso de error al buscar"""
+        if self.book_search_progress:
+            self.book_search_progress.close()
+            self.book_search_progress.deleteLater()
+            self.book_search_progress = None
+
         self.set_status(f"Error al buscar libro: {error}")
         QMessageBox.warning(self, "Error", error)
     
@@ -671,6 +884,9 @@ class MainWindow(QMainWindow):
         self.cover_url = None
         self.cover_preview.setText("Sin imagen")
         self.download_cover_btn.setEnabled(False)
+        self.advanced_group.setChecked(False)
+        for row in self.advanced_meta_rows:
+            self._clear_advanced_meta_input(row.get('input'))
         self.ean_input.setFocus()
 
     def clear_book_fields(self):
@@ -725,7 +941,8 @@ class MainWindow(QMainWindow):
             'length': self.length_input.value() or None,
             'width': self.width_input.value() or None,
             'height': self.height_input.value() or None,
-            'weight': self.weight_input.value() or None
+            'weight': self.weight_input.value() or None,
+            'advanced_meta_entries': self._get_filled_advanced_meta()
         }
         
         # Crear thread de subida
@@ -810,6 +1027,123 @@ class MainWindow(QMainWindow):
         if self.format_combo.currentText():
             parts.append(self.format_combo.currentText())
         return ' · '.join(parts)[:250]
+
+    def _render_advanced_meta_fields(self, fields):
+        """Renderiza dinámicamente los campos avanzados de metadatos."""
+        existing_values = {
+            row['key']: self._get_advanced_meta_input_value(row.get('input'))
+            for row in self.advanced_meta_rows
+            if row.get('input')
+        }
+
+        while self.advanced_meta_form_layout.rowCount() > 0:
+            self.advanced_meta_form_layout.removeRow(0)
+
+        self.advanced_meta_rows = []
+
+        if not fields:
+            empty_label = QLabel("No se detectaron custom fields en el sitio.")
+            empty_label.setStyleSheet("color: #bdbdbd;")
+            self.advanced_meta_form_layout.addRow(empty_label)
+            return
+
+        for field in fields:
+            key = str(field.get('key', '')).strip()
+            if not key:
+                continue
+
+            label_text = str(field.get('label') or key)
+            source = str(field.get('source') or 'meta')
+            field_type = str(field.get('type') or 'text')
+            acf_field_key = str(field.get('acf_field_key') or '').strip()
+            field_choices = field.get('choices')
+
+            row_label = QLabel(f"{label_text} ({key}) [{source}:{field_type}]")
+            if field_type in ('select', 'radio', 'button_group', 'checkbox', 'true_false', 'boolean'):
+                row_input = QComboBox()
+                row_input.addItem('Sin valor', '')
+
+                if field_type in ('true_false', 'boolean'):
+                    row_input.addItem('Si', '1')
+                    row_input.addItem('No', '0')
+                else:
+                    if isinstance(field_choices, dict):
+                        for option_value, option_label in field_choices.items():
+                            row_input.addItem(str(option_label), str(option_value))
+                    elif isinstance(field_choices, list):
+                        for option_value in field_choices:
+                            row_input.addItem(str(option_value), str(option_value))
+
+                row_input.setToolTip('Opcional: deja "Sin valor" para no enviar')
+            else:
+                row_input = QLineEdit()
+                row_input.setPlaceholderText("Opcional: deja vacío para no enviar")
+
+            if key in existing_values and existing_values[key]:
+                self._set_advanced_meta_input_value(row_input, existing_values[key])
+
+            self.advanced_meta_form_layout.addRow(row_label, row_input)
+            self.advanced_meta_rows.append({
+                'key': key,
+                'source': source,
+                'type': field_type,
+                'acf_field_key': acf_field_key,
+                'choices': field_choices,
+                'input': row_input
+            })
+
+    def _get_filled_advanced_meta(self):
+        """Devuelve solo metacampos avanzados con valor para enviarlos al crear producto."""
+        if not hasattr(self, 'advanced_group') or not self.advanced_group.isChecked():
+            return []
+
+        filled = []
+        for row in self.advanced_meta_rows:
+            raw_value = self._get_advanced_meta_input_value(row.get('input'))
+            if not raw_value:
+                continue
+            filled.append({
+                'key': row['key'],
+                'value': raw_value,
+                'acf_field_key': row.get('acf_field_key', '')
+            })
+        return filled
+
+    def _get_advanced_meta_input_value(self, widget):
+        """Obtiene valor normalizado desde QLineEdit/QComboBox de campos avanzados."""
+        if isinstance(widget, QComboBox):
+            data = widget.currentData()
+            if data is None:
+                return ''
+            return str(data).strip()
+
+        if isinstance(widget, QLineEdit):
+            return widget.text().strip()
+
+        return ''
+
+    def _set_advanced_meta_input_value(self, widget, value):
+        """Restaura valor previo en QLineEdit/QComboBox de campos avanzados."""
+        normalized = str(value).strip()
+        if isinstance(widget, QComboBox):
+            index = widget.findData(normalized)
+            if index < 0:
+                index = widget.findText(normalized)
+            if index >= 0:
+                widget.setCurrentIndex(index)
+            return
+
+        if isinstance(widget, QLineEdit):
+            widget.setText(normalized)
+
+    def _clear_advanced_meta_input(self, widget):
+        """Limpia valor de QLineEdit/QComboBox en campos avanzados."""
+        if isinstance(widget, QComboBox):
+            widget.setCurrentIndex(0)
+            return
+
+        if isinstance(widget, QLineEdit):
+            widget.clear()
 
     def set_status(self, message, timeout=5000):
         """Muestra un mensaje de estado en la barra de estado"""
@@ -958,6 +1292,28 @@ class ProductUploadThread(QThread):
                     'width': str(self.product_data.get('width', '') or ''),
                     'height': str(self.product_data.get('height', '') or '')
                 }
+
+            if self.product_data.get('weight'):
+                product_payload['weight'] = str(self.product_data.get('weight'))
+
+            # Meta personalizados: enviar solo los campos rellenados.
+            advanced_meta_entries = self.product_data.get('advanced_meta_entries') or []
+            meta_data = []
+            for entry in advanced_meta_entries:
+                key = str(entry.get('key', '')).strip()
+                value = str(entry.get('value', '')).strip()
+                acf_field_key = str(entry.get('acf_field_key', '')).strip()
+                if not key or value == '':
+                    continue
+
+                meta_data.append({'key': key, 'value': value})
+
+                # Para ACF, guardar también el metacampo privado con el field key.
+                if acf_field_key:
+                    meta_data.append({'key': f"_{key}", 'value': acf_field_key})
+
+            if meta_data:
+                product_payload['meta_data'] = meta_data
             
             # Agregar imagen destacada si se subió
             if media_id:

@@ -1,0 +1,150 @@
+name: Build And Release Installers
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Prepare venv
+        run: |
+          python -m venv venv
+
+      - name: Build Linux binary
+        run: |
+          bash packaging/scripts/build_linux.sh
+
+      - name: Build Linux DEB
+        run: |
+          bash packaging/scripts/package_linux_deb.sh
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-installers
+          path: |
+            dist/JORGE-Books-to-Woocommerce/**
+            dist-installer/linux/*.deb
+
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Prepare venv
+        shell: pwsh
+        run: |
+          python -m venv venv
+
+      - name: Build Windows binary
+        shell: cmd
+        run: |
+          packaging\scripts\build_windows.bat
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+
+      - name: Build EXE installer
+        shell: pwsh
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "packaging\installers\windows\JORGE-Books-to-Woocommerce.iss"
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installers
+          path: |
+            dist/JORGE-Books-to-Woocommerce/**
+            dist-installer/windows/*.exe
+
+  build-macos:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Prepare venv
+        run: |
+          python -m venv venv
+
+      - name: Build macOS app
+        run: |
+          bash packaging/scripts/build_macos.sh
+
+      - name: Build DMG
+        run: |
+          bash packaging/macos/create_dmg.sh
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-installers
+          path: |
+            dist/JORGE-Books-to-Woocommerce.app/**
+            dist-installer/macos/*.dmg
+
+  publish-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - build-linux
+      - build-windows
+      - build-macos
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download Linux artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-installers
+          path: release-artifacts/linux
+
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-installers
+          path: release-artifacts/windows
+
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-installers
+          path: release-artifacts/macos
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-artifacts/linux/**/*.deb
+            release-artifacts/windows/**/*.exe
+            release-artifacts/macos/**/*.dmg
