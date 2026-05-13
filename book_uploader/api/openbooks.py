@@ -248,6 +248,8 @@ class ExternalBookSourcesAPI:
         return (
             ('Casa del Libro', ExternalBookSourcesAPI._search_casa_del_libro),
             ('IberLibro', ExternalBookSourcesAPI._search_iberlibro),
+            ('Hamelyn', ExternalBookSourcesAPI._search_hamelyn),
+            ('WorldCat', ExternalBookSourcesAPI._search_worldcat),
         )
 
     @staticmethod
@@ -274,6 +276,33 @@ class ExternalBookSourcesAPI:
         if response.status_code != 200:
             return None
         return ExternalBookSourcesAPI._parse_bookpage(response.text)
+
+    @staticmethod
+    def _search_hamelyn(isbn):
+        """Buscar en Hamelyn (editorial española)."""
+        url = f"https://www.hamelyn.com/search?q={isbn}"
+        headers = {'User-Agent': ExternalBookSourcesAPI.USER_AGENT}
+        try:
+            response = requests.get(url, headers=headers, timeout=10)
+            if response.status_code != 200:
+                return None
+            return ExternalBookSourcesAPI._parse_bookpage(response.text)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _search_worldcat(isbn):
+        """Buscar en WorldCat (catálogo bibliográfico mundial)."""
+        # WorldCat permite búsquedas por ISBN sin necesidad de API key en algunos casos
+        url = f"https://www.worldcat.org/search?q=bn%3A{isbn}"
+        headers = {'User-Agent': ExternalBookSourcesAPI.USER_AGENT}
+        try:
+            response = requests.get(url, headers=headers, timeout=10)
+            if response.status_code != 200:
+                return None
+            return ExternalBookSourcesAPI._parse_bookpage(response.text)
+        except Exception:
+            return None
 
     @staticmethod
     def _parse_bookpage(html):

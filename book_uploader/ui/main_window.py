@@ -152,7 +152,7 @@ class BookFetchThread(QThread):
             
             if book_info:
                 if not book_info.get('publisher') or not book_info.get('cover_url'):
-                    self.source_changed.emit("Fuentes externas (Casa del Libro / IberLibro)")
+                    self.source_changed.emit("Fuentes externas (Hamelyn, Casa del Libro, IberLibro, WorldCat)")
                     fallback = ExternalBookSourcesAPI.get_book_by_isbn(self.isbn)
                     if fallback:
                         for key, value in fallback.items():
@@ -165,7 +165,7 @@ class BookFetchThread(QThread):
             self.source_changed.emit("Google Books")
             book_info = GoogleBooksAPI.get_book_by_isbn(self.isbn)
             if book_info and (not book_info.get('publisher') or not book_info.get('cover_url')):
-                self.source_changed.emit("Fuentes externas (Casa del Libro / IberLibro)")
+                self.source_changed.emit("Fuentes externas (Hamelyn, Casa del Libro, IberLibro, WorldCat)")
                 fallback = ExternalBookSourcesAPI.get_book_by_isbn(self.isbn)
                 if fallback:
                     for key, value in fallback.items():
@@ -175,14 +175,28 @@ class BookFetchThread(QThread):
             if book_info:
                 self.book_data_fetched.emit(book_info)
             else:
-                self.source_changed.emit("Fuentes externas (Casa del Libro / IberLibro)")
+                self.source_changed.emit("Fuentes externas (Hamelyn, Casa del Libro, IberLibro, WorldCat)")
                 external_only, source_name = ExternalBookSourcesAPI.get_book_by_isbn_with_source(self.isbn)
                 if external_only:
                     if source_name:
                         self.source_changed.emit(source_name)
                     self.book_data_fetched.emit(external_only)
                     return
-                self.error_occurred.emit("No se encontró información para este ISBN")
+                
+                # Si no se encuentra con el ISBN tal cual, intentar con prefijo 978 
+                # (para ISBNs de 10 dígitos o incompletos sin prefijo)
+                clean_isbn = self.isbn.replace('-', '').replace(' ', '')
+                if len(clean_isbn) == 10 and clean_isbn.isdigit():
+                    self.source_changed.emit("Reintentando con prefijo ISBN-13 (978)...")
+                    isbn_with_prefix = f"978{clean_isbn}"
+                    external_with_prefix, source_name = ExternalBookSourcesAPI.get_book_by_isbn_with_source(isbn_with_prefix)
+                    if external_with_prefix:
+                        if source_name:
+                            self.source_changed.emit(source_name)
+                        self.book_data_fetched.emit(external_with_prefix)
+                        return
+                
+                self.error_occurred.emit("No se encontró información para este ISBN en ninguna fuente disponible")
         except Exception as e:
             self.error_occurred.emit(f"Error al buscar: {str(e)}")
 
@@ -421,6 +435,23 @@ class MainWindow(QMainWindow):
         ean_layout.addWidget(fetch_btn)
         
         form_layout.addRow(ean_label, ean_layout)
+        
+        # Nota de ayuda sobre formatos de ISBN
+        isbn_help = QLabel(
+            "<small><b>Formatos de ISBN aceptados:</b><br/>"
+            "• ISBN-13 (13 dígitos): <code>978-84-12345-67-8</code> o sin guiones<br/>"
+            "• ISBN-10 (10 dígitos): <code>8412345678</code> (antiguo, todavía válido)<br/>"
+            "• Sin prefijo: Si solo tienes los números sin \"978\", puedo buscar así también<br/>"
+            "• Códigos frecuentes: 978 (libros españoles e internacionales), 979 (libros digitales)<br/>"
+            "<i>Si el ISBN no se encuentra, buscaré en Hamelyn, Casa del Libro, IberLibro y WorldCat</i></small>"
+        )
+        isbn_help.setWordWrap(True)
+        isbn_help.setStyleSheet(
+            "QLabel { color: #666666; background-color: #f5f5f5; padding: 8px; border-radius: 4px; }"
+            "small { font-size: 11px; }"
+            "code { background-color: #e8e8e8; padding: 2px 4px; border-radius: 2px; font-family: monospace; }"
+        )
+        form_layout.addRow("", isbn_help)
         
         # Título
         title_label = QLabel("Título:")
