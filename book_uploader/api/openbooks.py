@@ -46,6 +46,50 @@ class OpenBooksAPI:
             return None
 
     @staticmethod
+    def search_isbn_candidates(query, max_results=12):
+        """Busca posibles ISBN a partir de texto libre (titulo/autor/editorial)."""
+        try:
+            clean_query = (query or '').strip()
+            if not clean_query:
+                return []
+
+            search_url = f"{OpenBooksAPI.BASE_URL}/search.json?q={requests.utils.quote(clean_query)}&limit=20"
+            response = requests.get(search_url, timeout=8)
+            if response.status_code != 200:
+                return []
+
+            data = response.json()
+            docs = data.get('docs', []) if isinstance(data, dict) else []
+
+            candidates = []
+            seen = set()
+
+            for doc in docs:
+                isbn_values = doc.get('isbn', []) if isinstance(doc.get('isbn'), list) else []
+                for raw_isbn in isbn_values:
+                    isbn = str(raw_isbn).replace('-', '').replace(' ', '').strip()
+                    if not (isbn.isdigit() and len(isbn) in (10, 13)):
+                        continue
+                    if isbn in seen:
+                        continue
+
+                    seen.add(isbn)
+                    candidates.append({
+                        'isbn': isbn,
+                        'title': doc.get('title', '') or '',
+                        'author': ', '.join(doc.get('author_name', [])[:2]) if isinstance(doc.get('author_name'), list) else '',
+                        'publisher': doc.get('publisher', [''])[0] if isinstance(doc.get('publisher'), list) and doc.get('publisher') else ''
+                    })
+
+                    if len(candidates) >= max_results:
+                        return candidates
+
+            return candidates
+        except Exception as e:
+            print(f"Error buscando candidatos ISBN en OpenLibrary: {e}")
+            return []
+
+    @staticmethod
     def _parse_openlibrary_search_doc(doc):
         """Parsea un resultado de OpenLibrary Search API."""
         try:
@@ -183,6 +227,62 @@ class GoogleBooksAPI:
         except Exception as e:
             print(f"Error al buscar en Google Books: {e}")
             return None
+
+    @staticmethod
+    def search_isbn_candidates(query, api_key=None, max_results=12):
+        """Busca ISBN candidatos en Google Books usando texto libre."""
+        try:
+            clean_query = (query or '').strip()
+            if not clean_query:
+                return []
+
+            url = f"{GoogleBooksAPI.BASE_URL}/volumes?q={requests.utils.quote(clean_query)}&maxResults=20"
+            if api_key:
+                url += f"&key={api_key}"
+
+            response = requests.get(url, timeout=8)
+            if response.status_code != 200:
+                return []
+
+            data = response.json()
+            items = data.get('items', []) if isinstance(data, dict) else []
+
+            candidates = []
+            seen = set()
+
+            for item in items:
+                volume = item.get('volumeInfo', {}) if isinstance(item, dict) else {}
+                identifiers = volume.get('industryIdentifiers', []) if isinstance(volume.get('industryIdentifiers'), list) else []
+
+                isbn13 = ''
+                isbn10 = ''
+                for ident in identifiers:
+                    ident_type = ident.get('type', '')
+                    ident_value = str(ident.get('identifier', '')).replace('-', '').replace(' ', '')
+                    if ident_type == 'ISBN_13' and ident_value.isdigit() and len(ident_value) == 13:
+                        isbn13 = ident_value
+                    elif ident_type == 'ISBN_10' and ident_value.isdigit() and len(ident_value) == 10:
+                        isbn10 = ident_value
+
+                isbn = isbn13 or isbn10
+                if not isbn or isbn in seen:
+                    continue
+
+                seen.add(isbn)
+                candidates.append({
+                    'isbn': isbn,
+                    'title': volume.get('title', '') or '',
+                    'author': ', '.join(volume.get('authors', [])[:2]) if isinstance(volume.get('authors'), list) else '',
+                    'publisher': volume.get('publisher', '') or ''
+                })
+
+                if len(candidates) >= max_results:
+                    return candidates
+
+            return candidates
+        except Exception as e:
+            print(f"Error buscando candidatos ISBN en Google Books: {e}")
+            return []
     
     @staticmethod
     def _parse_google_data(data):

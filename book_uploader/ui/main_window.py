@@ -201,6 +201,46 @@ class BookFetchThread(QThread):
             self.error_occurred.emit(f"Error al buscar: {str(e)}")
 
 
+class IsbnCandidatesFetchThread(QThread):
+    """Thread para buscar posibles ISBN por texto libre."""
+
+    candidates_fetched = pyqtSignal(list)
+    error_occurred = pyqtSignal(str)
+    source_changed = pyqtSignal(str)
+
+    def __init__(self, query_text):
+        super().__init__()
+        self.query_text = query_text
+
+    def run(self):
+        try:
+            candidates = []
+            seen = set()
+
+            self.source_changed.emit("OpenLibrary (busqueda por texto)")
+            openlibrary_candidates = OpenBooksAPI.search_isbn_candidates(self.query_text, max_results=12)
+            for candidate in openlibrary_candidates:
+                isbn = candidate.get('isbn', '')
+                if isbn and isbn not in seen:
+                    seen.add(isbn)
+                    candidates.append(candidate)
+
+            if len(candidates) < 12:
+                self.source_changed.emit("Google Books (busqueda por texto)")
+                google_candidates = GoogleBooksAPI.search_isbn_candidates(self.query_text, max_results=12)
+                for candidate in google_candidates:
+                    isbn = candidate.get('isbn', '')
+                    if isbn and isbn not in seen:
+                        seen.add(isbn)
+                        candidates.append(candidate)
+                        if len(candidates) >= 12:
+                            break
+
+            self.candidates_fetched.emit(candidates[:12])
+        except Exception as e:
+            self.error_occurred.emit(f"Error buscando candidatos ISBN: {str(e)}")
+
+
 class CoverDownloadThread(QThread):
     """Thread para descargar la portada sin bloquear UI"""
     
@@ -417,6 +457,20 @@ class MainWindow(QMainWindow):
         form_widget = QWidget()
         form_layout = QFormLayout(form_widget)
         form_layout.setSpacing(10)
+
+        # Zona superior de busqueda (separada visualmente del resto del formulario)
+        search_group = QGroupBox("Busqueda de libro")
+        search_group_layout = QVBoxLayout(search_group)
+
+        self.search_tabs = QTabWidget()
+
+        # Tab 1: Busqueda directa por ISBN/EAN
+        search_isbn_tab = QWidget()
+        search_isbn_layout = QVBoxLayout(search_isbn_tab)
+
+        ean_help_label = QLabel("ISBN directo (escaneado o escrito manualmente)")
+        ean_help_label.setStyleSheet("color: #555555; font-style: italic;")
+        search_isbn_layout.addWidget(ean_help_label)
         
         # EAN/ISBN (Campo crítico)
         ean_label = QLabel("📱 EAN/ISBN:")
@@ -433,8 +487,11 @@ class MainWindow(QMainWindow):
         
         ean_layout.addWidget(self.ean_input)
         ean_layout.addWidget(fetch_btn)
-        
-        form_layout.addRow(ean_label, ean_layout)
+
+        ean_row = QHBoxLayout()
+        ean_row.addWidget(ean_label)
+        ean_row.addLayout(ean_layout)
+        search_isbn_layout.addLayout(ean_row)
         
         # Nota de ayuda sobre formatos de ISBN
         isbn_help = QLabel(
@@ -451,7 +508,60 @@ class MainWindow(QMainWindow):
             "small { font-size: 11px; }"
             "code { background-color: #e8e8e8; padding: 2px 4px; border-radius: 2px; font-family: monospace; }"
         )
-        form_layout.addRow("", isbn_help)
+        search_isbn_layout.addWidget(isbn_help)
+
+        self.search_tabs.addTab(search_isbn_tab, "ISBN directo")
+
+        # Tab 2: Busqueda textual para obtener ISBN candidatos
+        search_text_tab = QWidget()
+        search_text_layout = QVBoxLayout(search_text_tab)
+
+        search_text_intro = QLabel(
+            "Busqueda opcional por texto libre (titulo + autor + editorial)."
+        )
+        search_text_intro.setWordWrap(True)
+        search_text_intro.setStyleSheet("color: #555555; font-style: italic;")
+        search_text_layout.addWidget(search_text_intro)
+
+        query_row = QHBoxLayout()
+        self.query_input = QLineEdit()
+        self.query_input.setPlaceholderText("Ejemplo: El nombre de la rosa Umberto Eco Lumen")
+        self.query_input.returnPressed.connect(self.search_isbn_candidates)
+        self.query_input.setStyleSheet("QLineEdit { font-size: 14px; padding: 8px; }")
+        query_row.addWidget(self.query_input)
+
+        self.search_candidates_btn = QPushButton("🔎 Buscar posibles ISBN")
+        self.search_candidates_btn.clicked.connect(self.search_isbn_candidates)
+        query_row.addWidget(self.search_candidates_btn)
+        search_text_layout.addLayout(query_row)
+
+        self.isbn_candidates_list = QListWidget()
+        self.isbn_candidates_list.setMinimumHeight(140)
+        self.isbn_candidates_list.itemDoubleClicked.connect(self.use_selected_isbn_candidate)
+        search_text_layout.addWidget(self.isbn_candidates_list)
+
+        candidates_actions = QHBoxLayout()
+        self.use_candidate_btn = QPushButton("✅ Usar ISBN seleccionado")
+        self.use_candidate_btn.clicked.connect(self.use_selected_isbn_candidate)
+        candidates_actions.addWidget(self.use_candidate_btn)
+
+        self.clear_candidates_btn = QPushButton("🧹 Limpiar candidatos")
+        self.clear_candidates_btn.clicked.connect(self.clear_isbn_candidates)
+        candidates_actions.addWidget(self.clear_candidates_btn)
+        candidates_actions.addStretch()
+        search_text_layout.addLayout(candidates_actions)
+
+        self.search_tabs.addTab(search_text_tab, "Busqueda por texto")
+        search_group_layout.addWidget(self.search_tabs)
+        form_layout.addRow(search_group)
+
+        # Separador visible entre zona de busqueda y zona de datos del libro
+        visual_separator = QLabel("──────────── Datos del libro (resultado y edicion) ────────────")
+        visual_separator.setStyleSheet(
+            "QLabel { color: #8f8f8f; background-color: #f0f0f0; "
+            "font-weight: bold; padding: 8px 10px; border: 1px solid #d8d8d8; border-radius: 4px; }"
+        )
+        form_layout.addRow(visual_separator)
         
         # Título
         title_label = QLabel("Título:")
@@ -911,9 +1021,12 @@ class MainWindow(QMainWindow):
             status = "✅ Subido" if product['woocommerce_id'] else "⏳ Pendiente"
             self.history_table.setItem(row, 4, QTableWidgetItem(status))
     
-    def fetch_book_info(self):
+    def fetch_book_info(self, isbn_override=None):
         """Busca información del libro por ISBN/EAN"""
-        ean = self.ean_input.text().strip()
+        ean = (isbn_override or self.ean_input.text()).strip()
+
+        if isbn_override:
+            self.ean_input.setText(ean)
         
         if not ean:
             QMessageBox.warning(self, "Error", "Por favor ingresa un EAN/ISBN")
@@ -934,6 +1047,77 @@ class MainWindow(QMainWindow):
         self.book_fetch_thread.source_changed.connect(self.on_book_source_changed)
         self.set_status("Buscando datos del libro...")
         self.book_fetch_thread.start()
+
+    def search_isbn_candidates(self):
+        """Busca posibles ISBN a partir de texto libre."""
+        query_text = self.query_input.text().strip()
+        if len(query_text) < 3:
+            QMessageBox.warning(self, "Busqueda por texto", "Escribe al menos 3 caracteres para buscar")
+            return
+
+        self.show_book_search_progress("OpenLibrary (busqueda por texto)")
+        self.isbn_candidates_thread = IsbnCandidatesFetchThread(query_text)
+        self.isbn_candidates_thread.candidates_fetched.connect(self.on_isbn_candidates_fetched)
+        self.isbn_candidates_thread.error_occurred.connect(self.on_fetch_error)
+        self.isbn_candidates_thread.source_changed.connect(self.on_book_source_changed)
+        self.set_status("Buscando posibles ISBN...")
+        self.isbn_candidates_thread.start()
+
+    def on_isbn_candidates_fetched(self, candidates):
+        """Muestra candidatos ISBN tras una busqueda por texto."""
+        if self.book_search_progress:
+            self.book_search_progress.close()
+            self.book_search_progress.deleteLater()
+            self.book_search_progress = None
+
+        self.isbn_candidates_list.clear()
+        for candidate in candidates:
+            isbn = candidate.get('isbn', '')
+            title = candidate.get('title', '').strip()
+            author = candidate.get('author', '').strip()
+            publisher = candidate.get('publisher', '').strip()
+
+            label_parts = [isbn]
+            if title:
+                label_parts.append(title)
+            if author:
+                label_parts.append(author)
+            if publisher:
+                label_parts.append(publisher)
+
+            item = QListWidgetItem(" | ".join(label_parts))
+            item.setData(Qt.UserRole, isbn)
+            self.isbn_candidates_list.addItem(item)
+
+        if candidates:
+            self.set_status(f"Se encontraron {len(candidates)} ISBN candidatos")
+            self.isbn_candidates_list.setCurrentRow(0)
+        else:
+            self.set_status("No se encontraron candidatos ISBN con esa busqueda")
+            QMessageBox.information(
+                self,
+                "Sin resultados",
+                "No se encontraron ISBN candidatos. Prueba con menos palabras o solo titulo + autor."
+            )
+
+    def use_selected_isbn_candidate(self):
+        """Usa el ISBN seleccionado y dispara la busqueda normal por ISBN."""
+        item = self.isbn_candidates_list.currentItem()
+        if not item:
+            QMessageBox.information(self, "Selecciona un ISBN", "Elige un candidato de la lista primero")
+            return
+
+        selected_isbn = item.data(Qt.UserRole)
+        if not selected_isbn:
+            QMessageBox.warning(self, "ISBN invalido", "El candidato seleccionado no tiene ISBN valido")
+            return
+
+        self.search_tabs.setCurrentIndex(0)
+        self.fetch_book_info(isbn_override=selected_isbn)
+
+    def clear_isbn_candidates(self):
+        """Limpia resultados de busqueda textual de ISBN."""
+        self.isbn_candidates_list.clear()
 
     def show_book_search_progress(self, initial_message):
         """Muestra un aviso no bloqueante con la fuente actual de busqueda."""
@@ -1053,6 +1237,10 @@ class MainWindow(QMainWindow):
     def clear_form(self):
         """Limpia todos los campos del formulario"""
         self.ean_input.clear()
+        if hasattr(self, 'query_input'):
+            self.query_input.clear()
+        if hasattr(self, 'isbn_candidates_list'):
+            self.isbn_candidates_list.clear()
         self.title_input.clear()
         self.author_input.clear()
         self.publisher_input.clear()

@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DIST_APP="$ROOT_DIR/dist/JORGE-Books-to-Woocommerce"
 PKG_ROOT="$ROOT_DIR/dist-installer/linux/deb-root"
 PKG_NAME="jorge-books-to-woocommerce"
-VERSION="0.9.2"
+VERSION="1.0.2~beta1"
 ARCH="amd64"
 
 if ! command -v dpkg-deb >/dev/null 2>&1; then

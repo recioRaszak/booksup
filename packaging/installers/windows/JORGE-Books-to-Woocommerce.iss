@@ -2,7 +2,7 @@
 ; Requiere que exista dist\JORGE-Books-to-Woocommerce\
 
 #define MyAppName "JORGE - Books to Woocommerce"
-#define MyAppVersion "0.9.2"
+#define MyAppVersion "1.0.2 Beta"
 #define MyAppPublisher "JORGE Team"
 #define MyAppURL "https://agency.wham-vintage.com"
 #define MyAppExeName "JORGE-Books-to-Woocommerce.exe"
