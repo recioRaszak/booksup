@@ -59,7 +59,27 @@ class Database:
                 FOREIGN KEY (site_id) REFERENCES sites(id)
             )
         ''')
-        
+
+        # Tabla de ajustes de la aplicación (clave → valor)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        ''')
+
+        # Tabla de valores por defecto para campos de producto
+        # field_type: 'native' = campos WooCommerce nativos,
+        #             'custom' = campos personalizados del sitio
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS field_defaults (
+                field_key  TEXT PRIMARY KEY,
+                field_type TEXT NOT NULL DEFAULT 'native',
+                label      TEXT,
+                value      TEXT NOT NULL DEFAULT ''
+            )
+        ''')
+
         conn.commit()
         conn.close()
     
@@ -140,3 +160,92 @@ class Database:
         products = [dict(row) for row in cursor.fetchall()]
         conn.close()
         return products
+
+    # ── Ajustes de la aplicación ──────────────────────────────────────────────
+
+    def get_setting(self, key: str, default: str = '') -> str:
+        """Devuelve el valor de un ajuste o *default* si no existe."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('SELECT value FROM app_settings WHERE key = ?', (key,))
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row else default
+
+    def set_setting(self, key: str, value: str) -> None:
+        """Guarda o actualiza un ajuste."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            'INSERT INTO app_settings (key, value) VALUES (?, ?) '
+            'ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+            (key, value)
+        )
+        conn.commit()
+        conn.close()
+
+    def get_all_settings(self) -> dict:
+        """Devuelve todos los ajustes como diccionario {key: value}."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('SELECT key, value FROM app_settings')
+        result = {row[0]: row[1] for row in cursor.fetchall()}
+        conn.close()
+        return result
+
+    # ── Valores por defecto de campos ─────────────────────────────────────────
+
+    def get_field_default(self, field_key: str) -> str:
+        """Devuelve el valor por defecto de un campo, o '' si no existe."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('SELECT value FROM field_defaults WHERE field_key = ?', (field_key,))
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row else ''
+
+    def set_field_default(self, field_key: str, value: str,
+                          label: str = '', field_type: str = 'native') -> None:
+        """Guarda o actualiza el valor por defecto de un campo."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            'INSERT INTO field_defaults (field_key, field_type, label, value) VALUES (?, ?, ?, ?) '
+            'ON CONFLICT(field_key) DO UPDATE SET value = excluded.value, '
+            'label = excluded.label, field_type = excluded.field_type',
+            (field_key, field_type, label, value)
+        )
+        conn.commit()
+        conn.close()
+
+    def get_all_field_defaults(self, field_type: str = None) -> list:
+        """Devuelve todos los defaults de campos, opcionalmente filtrados por tipo."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        if field_type:
+            cursor.execute(
+                'SELECT * FROM field_defaults WHERE field_type = ? ORDER BY field_key',
+                (field_type,)
+            )
+        else:
+            cursor.execute('SELECT * FROM field_defaults ORDER BY field_type, field_key')
+        rows = [dict(r) for r in cursor.fetchall()]
+        conn.close()
+        return rows
+
+    def delete_field_defaults_by_type(self, field_type: str) -> None:
+        """Elimina todos los defaults de un tipo determinado (útil al recargar custom fields)."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM field_defaults WHERE field_type = ?', (field_type,))
+        conn.commit()
+        conn.close()
+
+    def delete_site(self, site_id: int) -> None:
+        """Elimina un sitio por id."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM sites WHERE id = ?', (site_id,))
+        conn.commit()
+        conn.close()

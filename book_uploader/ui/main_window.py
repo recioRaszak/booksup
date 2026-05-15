@@ -23,7 +23,7 @@ from book_uploader.api.woocommerce import WooCommerceAPI
 from book_uploader.utils.helpers import (
     get_cover_path, validate_isbn, format_price, truncate_text, get_covers_dir
 )
-from book_uploader.ui.dialogs import SiteSettingsDialog, AppSplashDialog
+from book_uploader.ui.dialogs import SiteSettingsDialog, AppSplashDialog, AppSettingsDialog
 
 
 def _pick_serif_font_family():
@@ -364,7 +364,10 @@ class MainWindow(QMainWindow):
         self.app_website = app_website
         self.app_version = app_version
         self.splash_image_path = splash_image_path
-        
+
+        # ── Ajustes persistentes ──────────────────────────────────────────
+        self._load_app_settings()
+
         self.setWindowTitle(f"📚 {self.app_name}")
         self.setGeometry(100, 100, 1000, 800)
         self.setStyleSheet(self._get_stylesheet())
@@ -413,10 +416,18 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Listo")
         
         self.refresh_sites()
+        self.apply_form_defaults()
 
     def _setup_menu_bar(self):
         """Crea menú superior con acciones de ayuda/about."""
         menubar = self.menuBar()
+
+        # Menú Ajustes
+        settings_menu = menubar.addMenu("Ajustes")
+        app_settings_action = QAction("⚙️ Preferencias de la app", self)
+        app_settings_action.triggered.connect(self.open_app_settings)
+        settings_menu.addAction(app_settings_action)
+
         ayuda_menu = menubar.addMenu("Ayuda")
 
         about_action = QAction("Acerca de", self)
@@ -1697,63 +1708,268 @@ class MainWindow(QMainWindow):
         dialog = SiteSettingsDialog(self, self.db)
         if dialog.exec_():
             self.refresh_sites()
-    
+
+    def open_app_settings(self):
+        """Abre el diálogo de ajustes de la aplicación."""
+        dialog = AppSettingsDialog(self, self.db, current_site=self.current_site)
+        dialog.settings_applied.connect(self._on_settings_applied)
+        dialog.exec_()
+
+    def _on_settings_applied(self):
+        """Aplica en caliente los nuevos ajustes de tema y fuente."""
+        self._load_app_settings()
+        self.setStyleSheet(self._get_stylesheet())
+        # Actualizar también la barra de estado para dar feedback visual
+        self.statusBar().showMessage("Ajustes aplicados", 3000)
+
+    def _load_app_settings(self):
+        """Carga los ajustes persistentes desde la base de datos."""
+        from book_uploader.utils.i18n import set_language
+        settings = self.db.get_all_settings()
+        self._theme = settings.get('theme', 'dark')
+        self._font_large = settings.get('font_size', 'normal') == 'large'
+        lang = settings.get('language', 'es')
+        set_language(lang)
+
+    def apply_form_defaults(self):
+        """Aplica los valores por defecto guardados a los campos del formulario."""
+        def _f(key, fallback=''):
+            return self.db.get_field_default(key) or fallback
+
+        try:
+            price_val = float(_f('price', '4.0'))
+            self.price_input.setValue(price_val)
+        except (ValueError, AttributeError):
+            pass
+
+        try:
+            stock_val = int(float(_f('stock', '1')))
+            self.stock_spin.setValue(stock_val)
+        except (ValueError, AttributeError):
+            pass
+
+        for attr, key in [
+            ('weight_input', 'weight'),
+            ('length_input', 'length'),
+            ('width_input', 'width'),
+            ('height_input', 'height'),
+        ]:
+            try:
+                widget = getattr(self, attr, None)
+                if widget:
+                    widget.setValue(float(_f(key, '0.0')))
+            except (ValueError, AttributeError):
+                pass
+
     def _get_stylesheet(self):
-        """Retorna el stylesheet de la aplicación"""
-        return """
-            QMainWindow {
+        """Retorna el stylesheet de la aplicación según tema y tamaño de fuente."""
+        theme = getattr(self, '_theme', 'dark')
+        font_large = getattr(self, '_font_large', False)
+        base_pt = 11 if font_large else 9
+
+        if theme == 'light':
+            return self._stylesheet_light(base_pt)
+        return self._stylesheet_dark(base_pt)
+
+    def _stylesheet_dark(self, base_pt: int) -> str:
+        return f"""
+            QMainWindow, QWidget {{
                 background-color: #2b2b2b;
                 color: #ffffff;
-                font-family: "Libre Serif", "Times New Roman", "Times", "Liberation Serif", "DejaVu Serif", "Noto Serif";
-            }
-            QLabel {
+                font-family: "Libre Serif", "Times New Roman", "Times",
+                             "Liberation Serif", "DejaVu Serif", "Noto Serif";
+                font-size: {base_pt}pt;
+            }}
+            QLabel {{
                 color: #ffffff;
-            }
-            QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QTextEdit {
+                font-size: {base_pt}pt;
+            }}
+            QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QTextEdit {{
                 border: 1px solid #555;
                 border-radius: 4px;
                 padding: 6px;
                 background-color: #3c3c3c;
                 color: #ffffff;
-            }
-            QPushButton {
+                font-size: {base_pt}pt;
+            }}
+            QPushButton {{
                 background-color: #B0642C;
                 color: white;
                 border: none;
                 border-radius: 4px;
                 padding: 6px 12px;
                 font-weight: bold;
-            }
-            QPushButton:hover {
+                font-size: {base_pt}pt;
+            }}
+            QPushButton:hover {{
                 background-color: #9D5726;
-            }
-            QPushButton:pressed {
+            }}
+            QPushButton:pressed {{
                 background-color: #7F461F;
-            }
-            QTabWidget::pane {
+            }}
+            QTabWidget::pane {{
                 border: 1px solid #555;
                 background-color: #2b2b2b;
-            }
-            QTabBar::tab {
+            }}
+            QTabBar::tab {{
                 background-color: #3c3c3c;
                 color: #ffffff;
                 padding: 8px 20px;
                 border: 1px solid #555;
-            }
-            QTabBar::tab:selected {
+                font-size: {base_pt}pt;
+            }}
+            QTabBar::tab:selected {{
                 background-color: #1976D2;
                 color: white;
-            }
-            QTableWidget {
+            }}
+            QTableWidget {{
                 background-color: #3c3c3c;
                 color: #ffffff;
                 gridline-color: #555;
-            }
-            QHeaderView::section {
+                font-size: {base_pt}pt;
+            }}
+            QHeaderView::section {{
                 background-color: #2b2b2b;
                 color: #ffffff;
                 border: 1px solid #555;
-            }
+                font-size: {base_pt}pt;
+            }}
+            QGroupBox {{
+                border: 1px solid #555;
+                border-radius: 6px;
+                margin-top: 10px;
+                padding-top: 8px;
+                color: #e0e0e0;
+                font-size: {base_pt}pt;
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: 10px;
+                color: #cccccc;
+            }}
+            QScrollArea {{
+                background-color: #2b2b2b;
+                border: none;
+            }}
+            QMenuBar {{
+                background-color: #1e1e1e;
+                color: #ffffff;
+                font-size: {base_pt}pt;
+            }}
+            QMenuBar::item:selected {{
+                background-color: #3a3a3a;
+            }}
+            QMenu {{
+                background-color: #2b2b2b;
+                color: #ffffff;
+                border: 1px solid #555;
+                font-size: {base_pt}pt;
+            }}
+            QMenu::item:selected {{
+                background-color: #1976D2;
+            }}
+        """
+
+    def _stylesheet_light(self, base_pt: int) -> str:
+        return f"""
+            QMainWindow, QWidget {{
+                background-color: #f5f5f5;
+                color: #212121;
+                font-family: "Libre Serif", "Times New Roman", "Times",
+                             "Liberation Serif", "DejaVu Serif", "Noto Serif";
+                font-size: {base_pt}pt;
+            }}
+            QLabel {{
+                color: #212121;
+                font-size: {base_pt}pt;
+            }}
+            QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QTextEdit {{
+                border: 1px solid #bdbdbd;
+                border-radius: 4px;
+                padding: 6px;
+                background-color: #ffffff;
+                color: #212121;
+                font-size: {base_pt}pt;
+            }}
+            QPushButton {{
+                background-color: #B0642C;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 6px 12px;
+                font-weight: bold;
+                font-size: {base_pt}pt;
+            }}
+            QPushButton:hover {{
+                background-color: #9D5726;
+            }}
+            QPushButton:pressed {{
+                background-color: #7F461F;
+            }}
+            QTabWidget::pane {{
+                border: 1px solid #bdbdbd;
+                background-color: #ffffff;
+            }}
+            QTabBar::tab {{
+                background-color: #e0e0e0;
+                color: #424242;
+                padding: 8px 20px;
+                border: 1px solid #bdbdbd;
+                font-size: {base_pt}pt;
+            }}
+            QTabBar::tab:selected {{
+                background-color: #1976D2;
+                color: white;
+            }}
+            QTableWidget {{
+                background-color: #ffffff;
+                color: #212121;
+                gridline-color: #e0e0e0;
+                alternate-background-color: #f9f9f9;
+                font-size: {base_pt}pt;
+            }}
+            QHeaderView::section {{
+                background-color: #eeeeee;
+                color: #424242;
+                border: 1px solid #bdbdbd;
+                font-size: {base_pt}pt;
+            }}
+            QGroupBox {{
+                border: 1px solid #bdbdbd;
+                border-radius: 6px;
+                margin-top: 10px;
+                padding-top: 8px;
+                background-color: #ffffff;
+                color: #424242;
+                font-size: {base_pt}pt;
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: 10px;
+                color: #616161;
+            }}
+            QScrollArea {{
+                background-color: #f5f5f5;
+                border: none;
+            }}
+            QMenuBar {{
+                background-color: #e8e8e8;
+                color: #212121;
+                font-size: {base_pt}pt;
+            }}
+            QMenuBar::item:selected {{
+                background-color: #d5d5d5;
+            }}
+            QMenu {{
+                background-color: #ffffff;
+                color: #212121;
+                border: 1px solid #bdbdbd;
+                font-size: {base_pt}pt;
+            }}
+            QMenu::item:selected {{
+                background-color: #1976D2;
+                color: #ffffff;
+            }}
         """
 
 

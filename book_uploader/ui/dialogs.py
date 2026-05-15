@@ -1,8 +1,10 @@
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QTableWidget, QTableWidgetItem, QMessageBox, QHeaderView, QFormLayout
+    QTableWidget, QTableWidgetItem, QMessageBox, QHeaderView, QFormLayout,
+    QTabWidget, QWidget, QGroupBox, QRadioButton, QButtonGroup, QComboBox,
+    QDoubleSpinBox, QSpinBox, QScrollArea, QSizePolicy, QFrame
 )
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QFont, QPixmap, QPainter, QColor, QFontDatabase
 import re
 import subprocess
@@ -563,3 +565,562 @@ class SiteSettingsDialog(QDialog):
                 font-weight: bold;
             }
         """
+
+
+# ── Thread auxiliar para cargar custom fields ────────────────────────────────
+
+class _CustomFieldsLoader(QThread):
+    """Carga los metacampos de producto desde el sitio WooCommerce activo."""
+
+    fields_loaded = pyqtSignal(list)
+    error_occurred = pyqtSignal(str)
+
+    def __init__(self, site: dict):
+        super().__init__()
+        self.site = site
+
+    def run(self):
+        try:
+            from book_uploader.api.woocommerce import WooCommerceAPI
+            api = WooCommerceAPI(
+                self.site['url'],
+                self.site['consumer_key'],
+                self.site['consumer_secret'],
+                self.site.get('wp_username'),
+                self.site.get('wp_password'),
+            )
+            response = api.get_product_meta_fields()
+            fields = response.get('fields', []) if isinstance(response, dict) else []
+            self.fields_loaded.emit(fields)
+        except Exception as exc:
+            self.error_occurred.emit(str(exc))
+
+
+# ── Diálogo de ajustes de la aplicación ──────────────────────────────────────
+
+class AppSettingsDialog(QDialog):
+    """Diálogo central de ajustes: apariencia, accesibilidad, idioma y defaults."""
+
+    # Emitido cuando se guardan ajustes de tema / fuente para que la ventana
+    # principal los aplique en caliente.
+    settings_applied = pyqtSignal()
+
+    def __init__(self, parent, db, current_site: dict | None = None):
+        super().__init__(parent)
+        from book_uploader.utils.i18n import tr, LANGUAGE_OPTIONS, get_language
+        self._tr = tr
+        self._lang_options = LANGUAGE_OPTIONS
+        self._get_language = get_language
+
+        self.db = db
+        self.current_site = current_site
+        self.serif_font_family = _pick_serif_font_family()
+        self._custom_fields_widgets: list[dict] = []  # {key, label, widget}
+        self._loader_thread: _CustomFieldsLoader | None = None
+
+        self.setWindowTitle(tr('settings.title'))
+        self.setMinimumSize(640, 580)
+        self.setModal(True)
+        self._apply_stylesheet()
+        self._init_ui()
+        self._load_current_values()
+
+    # ── Construcción de la UI ────────────────────────────────────────────────
+
+    def _init_ui(self):
+        tr = self._tr
+        root = QVBoxLayout(self)
+        root.setSpacing(0)
+        root.setContentsMargins(0, 0, 0, 0)
+
+        self.tabs = QTabWidget()
+        root.addWidget(self.tabs)
+
+        self.tabs.addTab(self._build_appearance_tab(), tr('settings.appearance'))
+        self.tabs.addTab(self._build_accessibility_tab(), tr('settings.accessibility'))
+        self.tabs.addTab(self._build_language_tab(), tr('settings.language'))
+        self.tabs.addTab(self._build_defaults_tab(), tr('settings.defaults'))
+
+        # Botones inferiores
+        btn_bar = QHBoxLayout()
+        btn_bar.setContentsMargins(16, 10, 16, 14)
+        btn_bar.addStretch()
+
+        save_btn = QPushButton(tr('app.save'))
+        save_btn.setMinimumWidth(130)
+        save_btn.clicked.connect(self._on_save)
+        btn_bar.addWidget(save_btn)
+
+        cancel_btn = QPushButton(tr('app.cancel'))
+        cancel_btn.setMinimumWidth(110)
+        cancel_btn.setObjectName('secondary')
+        cancel_btn.clicked.connect(self.reject)
+        btn_bar.addWidget(cancel_btn)
+
+        root.addLayout(btn_bar)
+
+    # ── Tab Apariencia ───────────────────────────────────────────────────────
+
+    def _build_appearance_tab(self) -> QWidget:
+        tr = self._tr
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(16)
+
+        group = QGroupBox(tr('settings.theme'))
+        group.setFont(QFont(self.serif_font_family, 10, QFont.Bold))
+        g_layout = QVBoxLayout(group)
+        g_layout.setSpacing(10)
+
+        self._theme_group = QButtonGroup(self)
+        self._radio_dark = QRadioButton(tr('settings.theme_dark'))
+        self._radio_light = QRadioButton(tr('settings.theme_light'))
+        self._theme_group.addButton(self._radio_dark, 0)
+        self._theme_group.addButton(self._radio_light, 1)
+
+        # Preview visual de cada tema
+        for radio, preview_color, text_color in [
+            (self._radio_dark, '#2b2b2b', '#ffffff'),
+            (self._radio_light, '#f5f5f5', '#212121'),
+        ]:
+            row = QHBoxLayout()
+            swatch = QLabel()
+            swatch.setFixedSize(40, 22)
+            swatch.setStyleSheet(
+                f'background-color:{preview_color}; border:1px solid #888; border-radius:3px;'
+            )
+            row.addWidget(swatch)
+            row.addWidget(radio)
+            row.addStretch()
+            g_layout.addLayout(row)
+
+        layout.addWidget(group)
+        layout.addStretch()
+        return page
+
+    # ── Tab Accesibilidad ────────────────────────────────────────────────────
+
+    def _build_accessibility_tab(self) -> QWidget:
+        tr = self._tr
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(16)
+
+        group = QGroupBox(tr('settings.font_size'))
+        group.setFont(QFont(self.serif_font_family, 10, QFont.Bold))
+        g_layout = QVBoxLayout(group)
+        g_layout.setSpacing(10)
+
+        self._font_group = QButtonGroup(self)
+        self._radio_font_normal = QRadioButton(tr('settings.font_normal'))
+        self._radio_font_large = QRadioButton(tr('settings.font_large'))
+        self._font_group.addButton(self._radio_font_normal, 0)
+        self._font_group.addButton(self._radio_font_large, 1)
+
+        for radio, sample_pt in [
+            (self._radio_font_normal, 9),
+            (self._radio_font_large, 11),
+        ]:
+            row = QHBoxLayout()
+            sample = QLabel('Aa')
+            sample.setFont(QFont(self.serif_font_family, sample_pt))
+            sample.setFixedWidth(36)
+            row.addWidget(sample)
+            row.addWidget(radio)
+            row.addStretch()
+            g_layout.addLayout(row)
+
+        layout.addWidget(group)
+        layout.addStretch()
+        return page
+
+    # ── Tab Idioma ───────────────────────────────────────────────────────────
+
+    def _build_language_tab(self) -> QWidget:
+        tr = self._tr
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(14)
+
+        lbl = QLabel(tr('settings.language_label'))
+        lbl.setFont(QFont(self.serif_font_family, 10, QFont.Bold))
+        layout.addWidget(lbl)
+
+        self._lang_combo = QComboBox()
+        for code, name in self._lang_options:
+            self._lang_combo.addItem(name, userData=code)
+        layout.addWidget(self._lang_combo)
+
+        note = QLabel(tr('settings.language_restart_note'))
+        note.setWordWrap(True)
+        note.setObjectName('note')
+        layout.addWidget(note)
+
+        layout.addStretch()
+        return page
+
+    # ── Tab Valores por defecto ──────────────────────────────────────────────
+
+    def _build_defaults_tab(self) -> QWidget:
+        tr = self._tr
+        page = QWidget()
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        outer.addWidget(scroll)
+
+        inner = QWidget()
+        scroll.setWidget(inner)
+        layout = QVBoxLayout(inner)
+        layout.setContentsMargins(20, 16, 20, 20)
+        layout.setSpacing(18)
+
+        desc = QLabel(tr('settings.defaults_desc'))
+        desc.setWordWrap(True)
+        desc.setObjectName('note')
+        layout.addWidget(desc)
+
+        # ── Campos nativos WooCommerce ──
+        native_group = QGroupBox(tr('settings.defaults_native'))
+        native_group.setFont(QFont(self.serif_font_family, 10, QFont.Bold))
+        native_form = QFormLayout(native_group)
+        native_form.setSpacing(10)
+
+        self._def_price = QDoubleSpinBox()
+        self._def_price.setRange(0.0, 99999.0)
+        self._def_price.setDecimals(2)
+        self._def_price.setMaximumWidth(150)
+        native_form.addRow(tr('settings.defaults_price'), self._def_price)
+
+        self._def_stock = QSpinBox()
+        self._def_stock.setRange(0, 99999)
+        self._def_stock.setMaximumWidth(120)
+        native_form.addRow(tr('settings.defaults_stock'), self._def_stock)
+
+        self._def_weight = QDoubleSpinBox()
+        self._def_weight.setRange(0.0, 9999.0)
+        self._def_weight.setDecimals(2)
+        self._def_weight.setMaximumWidth(150)
+        native_form.addRow(tr('settings.defaults_weight'), self._def_weight)
+
+        self._def_length = QDoubleSpinBox()
+        self._def_length.setRange(0.0, 9999.0)
+        self._def_length.setDecimals(1)
+        self._def_length.setMaximumWidth(150)
+        native_form.addRow(tr('settings.defaults_length'), self._def_length)
+
+        self._def_width = QDoubleSpinBox()
+        self._def_width.setRange(0.0, 9999.0)
+        self._def_width.setDecimals(1)
+        self._def_width.setMaximumWidth(150)
+        native_form.addRow(tr('settings.defaults_width'), self._def_width)
+
+        self._def_height = QDoubleSpinBox()
+        self._def_height.setRange(0.0, 9999.0)
+        self._def_height.setDecimals(1)
+        self._def_height.setMaximumWidth(150)
+        native_form.addRow(tr('settings.defaults_height'), self._def_height)
+
+        self._def_status = QComboBox()
+        self._def_status.addItem(tr('settings.defaults_status_draft'), userData='draft')
+        self._def_status.addItem(tr('settings.defaults_status_publish'), userData='publish')
+        self._def_status.setMaximumWidth(220)
+        native_form.addRow(tr('settings.defaults_status'), self._def_status)
+
+        self._def_catalog = QComboBox()
+        for key, label_key in [
+            ('visible', 'settings.defaults_catalog_visible'),
+            ('catalog', 'settings.defaults_catalog_catalog'),
+            ('search',  'settings.defaults_catalog_search'),
+            ('hidden',  'settings.defaults_catalog_hidden'),
+        ]:
+            self._def_catalog.addItem(tr(label_key), userData=key)
+        self._def_catalog.setMaximumWidth(220)
+        native_form.addRow(tr('settings.defaults_catalog_visibility'), self._def_catalog)
+
+        self._def_tax = QComboBox()
+        for key, label_key in [
+            ('taxable',  'settings.defaults_tax_taxable'),
+            ('shipping', 'settings.defaults_tax_shipping'),
+            ('none',     'settings.defaults_tax_none'),
+        ]:
+            self._def_tax.addItem(tr(label_key), userData=key)
+        self._def_tax.setMaximumWidth(220)
+        native_form.addRow(tr('settings.defaults_tax_status'), self._def_tax)
+
+        layout.addWidget(native_group)
+
+        # ── Campos personalizados ──
+        self._custom_group = QGroupBox(tr('settings.defaults_custom'))
+        self._custom_group.setFont(QFont(self.serif_font_family, 10, QFont.Bold))
+        self._custom_layout = QVBoxLayout(self._custom_group)
+        self._custom_layout.setSpacing(8)
+
+        self._custom_state_label = QLabel()
+        self._custom_state_label.setWordWrap(True)
+        self._custom_state_label.setObjectName('note')
+        self._custom_layout.addWidget(self._custom_state_label)
+
+        self._load_custom_btn = QPushButton(tr('settings.defaults_load_custom'))
+        self._load_custom_btn.clicked.connect(self._load_custom_fields)
+        self._custom_layout.addWidget(self._load_custom_btn)
+
+        # Contenedor dinámico donde se insertarán los campos cargados
+        self._custom_fields_container = QWidget()
+        self._custom_fields_form = QFormLayout(self._custom_fields_container)
+        self._custom_fields_form.setSpacing(8)
+        self._custom_layout.addWidget(self._custom_fields_container)
+
+        self._update_custom_state()
+        layout.addWidget(self._custom_group)
+        layout.addStretch()
+        return page
+
+    # ── Estado del bloque de custom fields ──────────────────────────────────
+
+    def _update_custom_state(self):
+        tr = self._tr
+        if self.current_site is None:
+            self._custom_state_label.setText(tr('settings.defaults_no_site'))
+            self._load_custom_btn.setVisible(False)
+        else:
+            self._custom_state_label.setText('')
+            self._load_custom_btn.setVisible(True)
+
+    def _load_custom_fields(self):
+        if self.current_site is None:
+            return
+        tr = self._tr
+        self._load_custom_btn.setEnabled(False)
+        self._custom_state_label.setText(tr('settings.defaults_custom_loading'))
+
+        self._loader_thread = _CustomFieldsLoader(self.current_site)
+        self._loader_thread.fields_loaded.connect(self._on_custom_fields_loaded)
+        self._loader_thread.error_occurred.connect(self._on_custom_fields_error)
+        self._loader_thread.start()
+
+    def _on_custom_fields_loaded(self, fields: list):
+        tr = self._tr
+        self._load_custom_btn.setEnabled(True)
+
+        # Limpiar campos previos
+        self._custom_fields_widgets.clear()
+        while self._custom_fields_form.rowCount():
+            self._custom_fields_form.removeRow(0)
+
+        if not fields:
+            self._custom_state_label.setText(
+                tr('settings.defaults_custom_loaded') + ' (0 campos encontrados)'
+            )
+            return
+
+        self._custom_state_label.setText(tr('settings.defaults_custom_loaded'))
+
+        saved_defaults = {
+            r['field_key']: r['value']
+            for r in self.db.get_all_field_defaults(field_type='custom')
+        }
+
+        for field in fields:
+            key = field.get('key') or field.get('meta_key', '')
+            label = field.get('label') or key
+            if not key:
+                continue
+
+            widget = QLineEdit()
+            widget.setPlaceholderText(field.get('placeholder', ''))
+            widget.setText(saved_defaults.get(key, ''))
+            self._custom_fields_form.addRow(QLabel(label), widget)
+            self._custom_fields_widgets.append({'key': key, 'label': label, 'widget': widget})
+
+    def _on_custom_fields_error(self, error: str):
+        tr = self._tr
+        self._load_custom_btn.setEnabled(True)
+        self._custom_state_label.setText(
+            tr('settings.defaults_custom_error').format(error=error)
+        )
+
+    # ── Carga de valores guardados ───────────────────────────────────────────
+
+    def _load_current_values(self):
+        settings = self.db.get_all_settings()
+
+        # Tema
+        theme = settings.get('theme', 'dark')
+        self._radio_dark.setChecked(theme == 'dark')
+        self._radio_light.setChecked(theme == 'light')
+
+        # Fuente
+        font_size = settings.get('font_size', 'normal')
+        self._radio_font_normal.setChecked(font_size == 'normal')
+        self._radio_font_large.setChecked(font_size == 'large')
+
+        # Idioma
+        current_lang = settings.get('language', self._get_language())
+        for i in range(self._lang_combo.count()):
+            if self._lang_combo.itemData(i) == current_lang:
+                self._lang_combo.setCurrentIndex(i)
+                break
+
+        # Valores por defecto (campos nativos)
+        def _f(key, fallback='0'):
+            return self.db.get_field_default(key) or fallback
+
+        self._def_price.setValue(float(_f('price', '4.0')))
+        self._def_stock.setValue(int(_f('stock', '1')))
+        self._def_weight.setValue(float(_f('weight', '0.0')))
+        self._def_length.setValue(float(_f('length', '0.0')))
+        self._def_width.setValue(float(_f('width', '0.0')))
+        self._def_height.setValue(float(_f('height', '0.0')))
+
+        self._set_combo_by_data(self._def_status, _f('status', 'draft'))
+        self._set_combo_by_data(self._def_catalog, _f('catalog_visibility', 'visible'))
+        self._set_combo_by_data(self._def_tax, _f('tax_status', 'taxable'))
+
+    @staticmethod
+    def _set_combo_by_data(combo: QComboBox, value: str):
+        for i in range(combo.count()):
+            if combo.itemData(i) == value:
+                combo.setCurrentIndex(i)
+                return
+
+    # ── Guardar ──────────────────────────────────────────────────────────────
+
+    def _on_save(self):
+        tr = self._tr
+
+        old_lang = self.db.get_setting('language', 'es')
+        old_theme = self.db.get_setting('theme', 'dark')
+        old_font = self.db.get_setting('font_size', 'normal')
+
+        # Ajustes de app
+        theme = 'dark' if self._radio_dark.isChecked() else 'light'
+        font_size = 'large' if self._radio_font_large.isChecked() else 'normal'
+        language = self._lang_combo.currentData() or 'es'
+
+        self.db.set_setting('theme', theme)
+        self.db.set_setting('font_size', font_size)
+        self.db.set_setting('language', language)
+
+        # Defaults nativos
+        native_map = {
+            'price':              str(self._def_price.value()),
+            'stock':              str(self._def_stock.value()),
+            'weight':             str(self._def_weight.value()),
+            'length':             str(self._def_length.value()),
+            'width':              str(self._def_width.value()),
+            'height':             str(self._def_height.value()),
+            'status':             self._def_status.currentData(),
+            'catalog_visibility': self._def_catalog.currentData(),
+            'tax_status':         self._def_tax.currentData(),
+        }
+        for key, value in native_map.items():
+            self.db.set_field_default(key, value, label=key, field_type='native')
+
+        # Defaults de custom fields (si se cargaron)
+        if self._custom_fields_widgets:
+            self.db.delete_field_defaults_by_type('custom')
+            for entry in self._custom_fields_widgets:
+                val = entry['widget'].text().strip()
+                self.db.set_field_default(
+                    entry['key'], val, label=entry['label'], field_type='custom'
+                )
+
+        # Avisar al padre para que aplique tema/fuente en caliente
+        self.settings_applied.emit()
+
+        # Si cambia el idioma, informar al usuario
+        if language != old_lang:
+            QMessageBox.information(
+                self,
+                tr('settings.language'),
+                tr('app.restart_required'),
+            )
+
+        QMessageBox.information(self, tr('app.settings'), tr('settings.saved_ok'))
+        self.accept()
+
+    # ── Stylesheet ───────────────────────────────────────────────────────────
+
+    def _apply_stylesheet(self):
+        self.setStyleSheet(self._get_stylesheet())
+
+    def _get_stylesheet(self) -> str:
+        return """
+            QDialog {
+                background-color: #efefef;
+                font-family: "Libre Serif", "Times New Roman", "Liberation Serif",
+                             "DejaVu Serif", "Noto Serif", serif;
+            }
+            QTabWidget::pane {
+                border: 1px solid #cccccc;
+                background-color: #f7f7f7;
+            }
+            QTabBar::tab {
+                background-color: #e0e0e0;
+                color: #333333;
+                padding: 8px 18px;
+                border: 1px solid #cccccc;
+                border-bottom: none;
+            }
+            QTabBar::tab:selected {
+                background-color: #f7f7f7;
+                color: #1565C0;
+                font-weight: bold;
+            }
+            QGroupBox {
+                border: 1px solid #cccccc;
+                border-radius: 6px;
+                margin-top: 10px;
+                padding-top: 10px;
+                background-color: #ffffff;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                color: #444444;
+            }
+            QLabel {
+                color: #333333;
+            }
+            QLabel#note {
+                color: #666666;
+                font-style: italic;
+                font-size: 11px;
+            }
+            QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
+                border: 1px solid #bbbbbb;
+                border-radius: 4px;
+                padding: 5px 7px;
+                background-color: #ffffff;
+                color: #212121;
+            }
+            QRadioButton {
+                color: #333333;
+                spacing: 8px;
+            }
+            QPushButton {
+                background-color: #B0642C;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 7px 18px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #9D5726;
+            }
+            QPushButton#secondary {
+                background-color: #757575;
+            }
+            QPushButton#secondary:hover {
+                background-color: #616161;
+            }
+        """
+
